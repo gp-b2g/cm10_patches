@@ -1,0 +1,57 @@
+diff --git a/bcmdhd/bcmdhd_net_iface/Android.mk b/bcmdhd/bcmdhd_net_iface/Android.mk
+index be22624..c5dc34d 100644
+--- a/bcmdhd/bcmdhd_net_iface/Android.mk
++++ b/bcmdhd/bcmdhd_net_iface/Android.mk
+@@ -24,7 +24,9 @@ LOCAL_PATH := $(call my-dir)
+ include $(CLEAR_VARS)
+ LOCAL_SRC_FILES := bcmdhd_net_iface.c
+ LOCAL_MODULE := libnetcmdiface
++ifeq ($(TARGET_ARCH),arm)
+ LOCAL_CFLAGS := -mabi=aapcs-linux
++endif
+ LOCAL_MODULE_TAGS := optional
+ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
+ include $(BUILD_SHARED_LIBRARY)
+diff --git a/bcmdhd/dhdutil/Android.mk b/bcmdhd/dhdutil/Android.mk
+index bc4c27b..1d3a14c 100644
+--- a/bcmdhd/dhdutil/Android.mk
++++ b/bcmdhd/dhdutil/Android.mk
+@@ -26,10 +26,14 @@ LOCAL_SRC_FILES := \
+ 	miniopt.c
+ 
+ LOCAL_MODULE := dhdutil
+-LOCAL_CFLAGS := -DSDTEST -DTARGETENV_android -Dlinux -DLINUX -mabi=aapcs-linux
++LOCAL_CFLAGS := -DSDTEST -DTARGETENV_android -Dlinux -DLINUX
++# To force sizeof(enum) = 4
++ifeq ($(TARGET_ARCH),arm)
++LOCAL_CFLAGS += -mabi=aapcs-linux
++endif
+ LOCAL_C_INCLUDES +=$(LOCAL_PATH)/include
+ 
+ LOCAL_MODULE_PATH := $(TARGET_OUT_OPTIONAL_EXECUTABLES)
+-LOCAL_MODULE_TAGS := debug
++LOCAL_MODULE_TAGS := optional
+ 
+ include $(BUILD_EXECUTABLE)
+diff --git a/bcmdhd/wpa_supplicant_8_lib/Android.mk b/bcmdhd/wpa_supplicant_8_lib/Android.mk
+index af3adf9..c94058b 100644
+--- a/bcmdhd/wpa_supplicant_8_lib/Android.mk
++++ b/bcmdhd/wpa_supplicant_8_lib/Android.mk
+@@ -44,7 +44,9 @@ WPA_SRC_FILE += driver_cmd_wext.c
+ endif
+ 
+ # To force sizeof(enum) = 4
++ifeq ($(TARGET_ARCH),arm)
+ L_CFLAGS += -mabi=aapcs-linux
++endif
+ 
+ ifdef CONFIG_ANDROID_LOG
+ L_CFLAGS += -DCONFIG_ANDROID_LOG
+@@ -54,6 +56,7 @@ endif
+ 
+ include $(CLEAR_VARS)
+ LOCAL_MODULE := lib_driver_cmd_bcmdhd
++LOCAL_MODULE_TAGS := optional
+ LOCAL_SHARED_LIBRARIES := libc libcutils
+ LOCAL_CFLAGS := $(L_CFLAGS)
+ LOCAL_SRC_FILES := $(WPA_SRC_FILE)

@@ -1,0 +1,810 @@
+diff --git a/content/canvas/src/CanvasRenderingContext2D.cpp b/content/canvas/src/CanvasRenderingContext2D.cpp
+index 75a0bc2..3d9b20f 100644
+--- a/content/canvas/src/CanvasRenderingContext2D.cpp
++++ b/content/canvas/src/CanvasRenderingContext2D.cpp
+@@ -101,6 +101,7 @@
+ 
+ #undef free // apparently defined by some windows header, clashing with a free()
+             // method in SkTypes.h
++#undef USE_SKIA
+ #ifdef USE_SKIA
+ #include "SkiaGLGlue.h"
+ #include "SurfaceStream.h"
+diff --git a/dom/power/PowerManager.cpp b/dom/power/PowerManager.cpp
+index ef5bc63..410c1b8f 100644
+--- a/dom/power/PowerManager.cpp
++++ b/dom/power/PowerManager.cpp
+@@ -154,18 +154,6 @@ PowerManager::SetScreenEnabled(bool aEnabled)
+   hal::SetScreenEnabled(aEnabled);
+ }
+ 
+-bool
+-PowerManager::KeyLightEnabled()
+-{
+-  return hal::GetKeyLightEnabled();
+-}
+-
+-void
+-PowerManager::SetKeyLightEnabled(bool aEnabled)
+-{
+-  hal::SetKeyLightEnabled(aEnabled);
+-}
+-
+ double
+ PowerManager::ScreenBrightness()
+ {
+diff --git a/dom/power/PowerManager.h b/dom/power/PowerManager.h
+index 1de45c2..f80440d 100644
+--- a/dom/power/PowerManager.h
++++ b/dom/power/PowerManager.h
+@@ -54,8 +54,6 @@ public:
+                         ErrorResult& aRv);
+   bool ScreenEnabled();
+   void SetScreenEnabled(bool aEnabled);
+-  bool KeyLightEnabled();
+-  void SetKeyLightEnabled(bool aEnabled);
+   double ScreenBrightness();
+   void SetScreenBrightness(double aBrightness, ErrorResult& aRv);
+   bool CpuSleepAllowed();
+diff --git a/dom/power/test/mochitest.ini b/dom/power/test/mochitest.ini
+index 1d1da9d..75176db 100644
+--- a/dom/power/test/mochitest.ini
++++ b/dom/power/test/mochitest.ini
+@@ -12,5 +12,3 @@ skip-if = toolkit != "gonk"
+ skip-if = toolkit != "gonk"
+ [test_power_set_screen_enabled.html]
+ skip-if = toolkit != "gonk"
+-[test_power_set_key_light_enabled.html]
+-skip-if = toolkit != "gonk"
+diff --git a/dom/power/test/test_power_set_key_light_enabled.html b/dom/power/test/test_power_set_key_light_enabled.html
+deleted file mode 100644
+index 96b9cc0..0000000
+--- a/dom/power/test/test_power_set_key_light_enabled.html
++++ /dev/null
+@@ -1,64 +0,0 @@
+-<!DOCTYPE HTML>
+-<html>
+-<head>
+-  <meta charset="utf-8">
+-  <title>Test Enabling/Disabling Screen with Power Management API</title>
+-  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+-  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
+-</head>
+-<body>
+-<p id="display"></p>
+-<div id="content" style="display: none"></div>
+-<pre id="test">
+-  <script type="application/javascript">
+-
+-  "use strict";
+-
+-  function testEnableKeyLight() {
+-    try {
+-      navigator.mozPower.keyLightEnabled = true;
+-      ok(navigator.mozPower.keyLightEnabled === true, "Enabled key backlight.");
+-    } catch (e) {
+-      ok(false, "Unexpected exception trying to enable key backlight.");
+-    }
+-  }
+-
+-  function testDisableKeyLight() {
+-    try {
+-      navigator.mozPower.keyLightEnabled = false;
+-      ok(navigator.mozPower.keyLightEnabled === false, "Disabled key backlight.");
+-    } catch (e) {
+-      ok(false, "Unexpected exception trying to disable key backlight.");
+-    }
+-  }
+-
+-  function startTests() {
+-
+-    // Make sure we don't suspend
+-    navigator.mozPower.cpuSleepAllowed = false;
+-
+-    testDisableKeyLight();
+-    testEnableKeyLight();
+-
+-    SimpleTest.finish();
+-  }
+-
+-  SimpleTest.waitForExplicitFinish();
+-  if (SpecialPowers.hasPermission("power", document)) {
+-    // Currently only applicable on FxOS
+-    if (navigator.userAgent.indexOf("Mobile") != -1 &&
+-        navigator.appVersion.indexOf("Android") == -1) {
+-      startTests();
+-    } else {
+-      ok(true, "mozPower on Firefox OS only.");
+-      SimpleTest.finish();
+-    }
+-  } else {
+-    // Add the permission and reload so it's propogated
+-    SpecialPowers.addPermission("power", true, document);
+-    window.location.reload();
+-  }
+-  </script>
+-</pre>
+-</body>
+-</html>
+diff --git a/dom/system/gonk/RadioInterfaceLayer.js b/dom/system/gonk/RadioInterfaceLayer.js
+index 1569edb..4a82b5f 100644
+--- a/dom/system/gonk/RadioInterfaceLayer.js
++++ b/dom/system/gonk/RadioInterfaceLayer.js
+@@ -720,7 +720,9 @@ XPCOMUtils.defineLazyGetter(this, "gRadioEnabledController", function() {
+         _request();
+         _request = null;
+       }
+-      this._processNextMessage();
++	  try{
++      	this._processNextMessage();
++	  } catch (e) {}
+     },
+   };
+ });
+diff --git a/dom/system/gonk/ril_worker.js b/dom/system/gonk/ril_worker.js
+index 15f0d6a..92d81f0 100644
+--- a/dom/system/gonk/ril_worker.js
++++ b/dom/system/gonk/ril_worker.js
+@@ -457,6 +457,11 @@ RilObject.prototype = {
+      */
+     this.cardState = GECKO_CARDSTATE_UNINITIALIZED;
+ 
++	/**
++	 * Flag to refresh Intel network data.
++	 */
++	this.needIntelNWRefresh = true;
++
+     /**
+      * Strings
+      */
+@@ -1359,6 +1364,34 @@ RilObject.prototype = {
+   },
+ 
+   /**
++   * Refresh networks and operator to automatically select it at boot on Intel devices.
++   */
++  setIntelNwWhenRilOn: function setIntelNwWhenRilOn() {
++	let ICCRecordHelper = this.context.ICCRecordHelper;
++	let ICCUtilsHelper = this.context.ICCUtilsHelper;
++	let ICCRecordHelper = this.context.ICCRecordHelper;
++	let RIL = this.context.RIL;
++	this.needIntelNWRefresh = false;
++    ICCRecordHelper.readICCID();
++	ICCUtilsHelper.handleICCInfoChange();
++	ICCRecordHelper.fetchICCRecords();
++	this.getICCStatus();
++	//Set automatic network by default to get the operator at boot.
++	this.selectNetworkAuto();
++	//Refresh operator
++	this.getVoiceRegistrationState();
++    this.getDataRegistrationState(); //TODO only GSM
++    this.getOperator();
++    this.getNetworkSelectionMode();
++    this.getSignalStrength();
++	//Reload related RIL data (like operator)
++	ICCUtilsHelper.updateDisplayCondition();
++	this.getSignalStrength();
++	if(RIL.iccInfo.iccid)
++		this.needIntelNWRefresh = false;
++  },
++
++  /**
+    * Request the radio's network selection mode
+    */
+   getNetworkSelectionMode: function() {
+@@ -1379,7 +1412,6 @@ RilObject.prototype = {
+    */
+   setRoamingPreference: function(options) {
+     let roamingMode = CDMA_ROAMING_PREFERENCE_TO_GECKO.indexOf(options.mode);
+-
+     if (roamingMode === -1) {
+       options.errorMsg = GECKO_ERROR_INVALID_PARAMETER;
+       this.sendChromeMessage(options);
+@@ -3453,6 +3485,8 @@ RilObject.prototype = {
+         break;
+       case CARD_APPSTATE_READY:
+         newCardState = GECKO_CARDSTATE_READY;
++	    if (this.needIntelNWRefresh)
++	 		this.setIntelNwWhenRilOn();
+         break;
+       case CARD_APPSTATE_UNKNOWN:
+       case CARD_APPSTATE_DETECTED:
+@@ -5799,7 +5833,7 @@ RilObject.prototype[REQUEST_SIM_IO] = function REQUEST_SIM_IO(length, options) {
+   let Buf = this.context.Buf;
+   options.sw1 = Buf.readInt32();
+   options.sw2 = Buf.readInt32();
+-  if (options.sw1 != ICC_STATUS_NORMAL_ENDING) {
++  if (options.sw1 != ICC_STATUS_NORMAL_ENDING && options.sw1 != ICC_STATUS_NORMAL_ENDING_WITH_EXTRA) {
+     ICCIOHelper.processICCIOError(options);
+     return;
+   }
+@@ -6334,10 +6368,11 @@ RilObject.prototype.readDataCall_v6 = function(options) {
+   options.ifname = Buf.readString();
+   let addresses = Buf.readString();
+   let dnses = Buf.readString();
+-  let gateways = Buf.readString();
++  Buf.readString();
++  let gateways = options.ifname;
+   options.addresses = addresses ? addresses.split(" ") : [];
+   options.dnses = dnses ? dnses.split(" ") : [];
+-  options.gateways = gateways ? gateways.split(" ") : [];
++  options.gateways = options.addresses;
+   return options;
+ };
+ 
+@@ -6669,6 +6704,7 @@ RilObject.prototype[UNSOLICITED_RESPONSE_RADIO_STATE_CHANGED] = function UNSOLIC
+   if (radioState == RADIO_STATE_UNAVAILABLE ||
+       radioState == RADIO_STATE_OFF ||
+       this._waitingRadioTech) {
++	this.needIntelNWRefresh = true;
+     return;
+   }
+   this.getICCStatus();
+@@ -12113,8 +12149,12 @@ ICCIOHelperObject.prototype = {
+     let fileId = (GsmPDUHelper.readHexOctet() << 8) |
+                   GsmPDUHelper.readHexOctet();
+     if (fileId != options.fileId) {
++     if(fileId != 0) {
+       throw new Error("Expected file ID " + options.fileId.toString(16) +
+                       " but read " + fileId.toString(16));
++     } else {
++           fileId = options.fileId;
++     }
+     }
+ 
+     // Type of file, data[6]
+diff --git a/dom/webidl/MozPowerManager.webidl b/dom/webidl/MozPowerManager.webidl
+index 45543bf..a16dd4d 100644
+--- a/dom/webidl/MozPowerManager.webidl
++++ b/dom/webidl/MozPowerManager.webidl
+@@ -60,13 +60,6 @@ interface MozPowerManager
+     attribute boolean screenEnabled;
+ 
+     /**
+-     * Is the device's keypad/button backlight enabled? Setting it to false will
+-     * turn off the device's keypad/button backlight. And the brightness level
+-     * is the same as |screenBrightness|.
+-     */
+-    attribute boolean keyLightEnabled;
+-
+-    /**
+      * How bright is the screen's backlight, on a scale from 0 (very dim) to 1
+      * (full brightness)?  Setting this attribute modifies the screen's
+      * brightness.
+diff --git a/gfx/layers/opengl/GrallocTextureHost.cpp b/gfx/layers/opengl/GrallocTextureHost.cpp
+index 73ac05c..cce4529 100644
+--- a/gfx/layers/opengl/GrallocTextureHost.cpp
++++ b/gfx/layers/opengl/GrallocTextureHost.cpp
+@@ -50,9 +50,9 @@ SurfaceFormatForAndroidPixelFormat(android::PixelFormat aFormat,
+       // We only want to abort in debug builds here, since if we crash here
+       // we'll take down the compositor process and thus the phone. This seems
+       // like undesirable behaviour. We'd rather have a subtle artifact.
+-      printf_stderr(" xxxxx unknow android format %i\n", (int)aFormat);
+-      MOZ_ASSERT(false, "Unknown Android pixel format.");
+-      return gfx::SurfaceFormat::UNKNOWN;
++      //printf_stderr(" xxxxx unknow android format %i\n", (int)aFormat);
++      //MOZ_ASSERT(false, "Unknown Android pixel format.");
++      return gfx::SurfaceFormat::R8G8B8A8;
+     }
+   }
+ }
+diff --git a/hal/Hal.cpp b/hal/Hal.cpp
+index 47e90ef..926d164 100644
+--- a/hal/Hal.cpp
++++ b/hal/Hal.cpp
+@@ -374,22 +374,10 @@ bool GetScreenEnabled()
+   RETURN_PROXY_IF_SANDBOXED(GetScreenEnabled(), false);
+ }
+ 
+-void SetScreenEnabled(bool aEnabled)
++void SetScreenEnabled(bool enabled)
+ {
+   AssertMainThread();
+-  PROXY_IF_SANDBOXED(SetScreenEnabled(aEnabled));
+-}
+-
+-bool GetKeyLightEnabled()
+-{
+-  AssertMainThread();
+-  RETURN_PROXY_IF_SANDBOXED(GetKeyLightEnabled(), false);
+-}
+-
+-void SetKeyLightEnabled(bool aEnabled)
+-{
+-  AssertMainThread();
+-  PROXY_IF_SANDBOXED(SetKeyLightEnabled(aEnabled));
++  PROXY_IF_SANDBOXED(SetScreenEnabled(enabled));
+ }
+ 
+ bool GetCpuSleepAllowed()
+@@ -402,10 +390,10 @@ bool GetCpuSleepAllowed()
+   RETURN_PROXY_IF_SANDBOXED(GetCpuSleepAllowed(), true);
+ }
+ 
+-void SetCpuSleepAllowed(bool aAllowed)
++void SetCpuSleepAllowed(bool allowed)
+ {
+   AssertMainThread();
+-  PROXY_IF_SANDBOXED(SetCpuSleepAllowed(aAllowed));
++  PROXY_IF_SANDBOXED(SetCpuSleepAllowed(allowed));
+ }
+ 
+ double GetScreenBrightness()
+@@ -414,10 +402,10 @@ double GetScreenBrightness()
+   RETURN_PROXY_IF_SANDBOXED(GetScreenBrightness(), 0);
+ }
+ 
+-void SetScreenBrightness(double aBrightness)
++void SetScreenBrightness(double brightness)
+ {
+   AssertMainThread();
+-  PROXY_IF_SANDBOXED(SetScreenBrightness(clamped(aBrightness, 0.0, 1.0)));
++  PROXY_IF_SANDBOXED(SetScreenBrightness(clamped(brightness, 0.0, 1.0)));
+ }
+ 
+ bool SetLight(LightType light, const LightConfiguration& aConfig)
+diff --git a/hal/Hal.h b/hal/Hal.h
+index e5514d0..8a2f132 100644
+--- a/hal/Hal.h
++++ b/hal/Hal.h
+@@ -125,17 +125,7 @@ bool GetScreenEnabled();
+  *
+  * Note that it may take a few seconds for the screen to turn on or off.
+  */
+-void SetScreenEnabled(bool aEnabled);
+-
+-/**
+- * Determine whether the device's keypad/button backlight is currently enabled.
+- */
+-bool GetKeyLightEnabled();
+-
+-/**
+- * Enable or disable the device's keypad/button backlight.
+- */
+-void SetKeyLightEnabled(bool aEnabled);
++void SetScreenEnabled(bool enabled);
+ 
+ /**
+  * Get the brightness of the device's screen's backlight, on a scale from 0
+@@ -156,7 +146,7 @@ double GetScreenBrightness();
+  * followed by GetScreenBrightness(), the value returned by
+  * GetScreenBrightness() may not be exactly x.
+  */
+-void SetScreenBrightness(double aBrightness);
++void SetScreenBrightness(double brightness);
+ 
+ /**
+  * Determine whether the device is allowed to sleep.
+@@ -167,7 +157,7 @@ bool GetCpuSleepAllowed();
+  * Set whether the device is allowed to suspend automatically after
+  * the screen is disabled.
+  */
+-void SetCpuSleepAllowed(bool aAllowed);
++void SetCpuSleepAllowed(bool allowed);
+ 
+ /**
+  * Set the value of a light to a particular color, with a specific flash pattern.
+diff --git a/hal/fallback/FallbackScreenPower.cpp b/hal/fallback/FallbackScreenPower.cpp
+index 72d843f..9dcde71 100644
+--- a/hal/fallback/FallbackScreenPower.cpp
++++ b/hal/fallback/FallbackScreenPower.cpp
+@@ -14,17 +14,7 @@ GetScreenEnabled()
+ }
+ 
+ void
+-SetScreenEnabled(bool aEnabled)
+-{}
+-
+-bool
+-GetKeyLightEnabled()
+-{
+-  return true;
+-}
+-
+-void
+-SetKeyLightEnabled(bool aEnabled)
++SetScreenEnabled(bool enabled)
+ {}
+ 
+ double
+@@ -34,7 +24,7 @@ GetScreenBrightness()
+ }
+ 
+ void
+-SetScreenBrightness(double aBrightness)
++SetScreenBrightness(double brightness)
+ {}
+ 
+ } // hal_impl
+diff --git a/hal/gonk/GonkHal.cpp b/hal/gonk/GonkHal.cpp
+index 4cee995..0c29cf3 100644
+--- a/hal/gonk/GonkHal.cpp
++++ b/hal/gonk/GonkHal.cpp
+@@ -388,7 +388,7 @@ DisableBatteryNotifications()
+ static bool
+ GetCurrentBatteryCharge(int* aCharge)
+ {
+-  bool success = ReadSysFile("/sys/class/power_supply/battery/capacity",
++  bool success = ReadSysFile("/sys/class/power_supply/max17047_battery/capacity",
+                              aCharge);
+   if (!success) {
+     return false;
+@@ -430,11 +430,11 @@ GetCurrentBatteryCharging(int* aCharging)
+     return true;
+   }
+ 
+-  // Otoro device support
++  // CLV+ device support
+ 
+   char chargingSrcString[16];
+ 
+-  success = ReadSysFile("/sys/class/power_supply/battery/status",
++  success = ReadSysFile("/sys/class/power_supply/max17047_battery/status",
+                         chargingSrcString, sizeof(chargingSrcString));
+   if (success) {
+     *aCharging = strcmp(chargingSrcString, "Charging") == 0 ||
+@@ -541,53 +541,21 @@ GetScreenEnabled()
+ }
+ 
+ void
+-SetScreenEnabled(bool aEnabled)
++SetScreenEnabled(bool enabled)
+ {
+-  GetGonkDisplay()->SetEnabled(aEnabled);
+-  sScreenEnabled = aEnabled;
+-}
+-
+-bool
+-GetKeyLightEnabled()
+-{
+-  hal::LightConfiguration config;
+-  hal_impl::GetLight(hal::eHalLightID_Buttons, &config);
+-  return (config.color() != 0x00000000);
+-}
+-
+-void
+-SetKeyLightEnabled(bool aEnabled)
+-{
+-  hal::LightConfiguration config;
+-  config.mode() = hal::eHalLightMode_User;
+-  config.flash() = hal::eHalLightFlash_None;
+-  config.flashOnMS() = config.flashOffMS() = 0;
+-  config.color() = 0x00000000;
+-
+-  if (aEnabled) {
+-    // Convert the value in [0, 1] to an int between 0 and 255 and then convert
+-    // it to a color. Note that the high byte is FF, corresponding to the alpha
+-    // channel.
+-    double brightness = GetScreenBrightness();
+-    uint32_t val = static_cast<int>(round(brightness * 255.0));
+-    uint32_t color = (0xff<<24) + (val<<16) + (val<<8) + val;
+-
+-    config.color() = color;
+-  }
+-
+-  hal_impl::SetLight(hal::eHalLightID_Buttons, config);
+-  hal_impl::SetLight(hal::eHalLightID_Keyboard, config);
++  GetGonkDisplay()->SetEnabled(enabled);
++  sScreenEnabled = enabled;
+ }
+ 
+ double
+ GetScreenBrightness()
+ {
+-  hal::LightConfiguration config;
++  hal::LightConfiguration aConfig;
+   hal::LightType light = hal::eHalLightID_Backlight;
+ 
+-  hal_impl::GetLight(light, &config);
++  hal::GetLight(light, &aConfig);
+   // backlight is brightness only, so using one of the RGB elements as value.
+-  int brightness = config.color() & 0xFF;
++  int brightness = aConfig.color() & 0xFF;
+   return brightness / 255.0;
+ }
+ 
+@@ -604,19 +572,16 @@ SetScreenBrightness(double brightness)
+ 
+   // Convert the value in [0, 1] to an int between 0 and 255 and convert to a color
+   // note that the high byte is FF, corresponding to the alpha channel.
+-  uint32_t val = static_cast<int>(round(brightness * 255.0));
++  int val = static_cast<int>(round(brightness * 255));
+   uint32_t color = (0xff<<24) + (val<<16) + (val<<8) + val;
+ 
+-  hal::LightConfiguration config;
+-  config.mode() = hal::eHalLightMode_User;
+-  config.flash() = hal::eHalLightFlash_None;
+-  config.flashOnMS() = config.flashOffMS() = 0;
+-  config.color() = color;
+-  hal_impl::SetLight(hal::eHalLightID_Backlight, config);
+-  if (GetKeyLightEnabled()) {
+-    hal_impl::SetLight(hal::eHalLightID_Buttons, config);
+-    hal_impl::SetLight(hal::eHalLightID_Keyboard, config);
+-  }
++  hal::LightConfiguration aConfig;
++  aConfig.mode() = hal::eHalLightMode_User;
++  aConfig.flash() = hal::eHalLightFlash_None;
++  aConfig.flashOnMS() = aConfig.flashOffMS() = 0;
++  aConfig.color() = color;
++  hal::SetLight(hal::eHalLightID_Backlight, aConfig);
++  hal::SetLight(hal::eHalLightID_Buttons, aConfig);
+ }
+ 
+ static Monitor* sInternalLockCpuMonitor = nullptr;
+diff --git a/hal/sandbox/PHal.ipdl b/hal/sandbox/PHal.ipdl
+index b68d58f..8589f05 100644
+--- a/hal/sandbox/PHal.ipdl
++++ b/hal/sandbox/PHal.ipdl
+@@ -127,16 +127,13 @@ parent:
+       returns (NetworkInformation aNetworkInfo);
+ 
+     sync GetScreenEnabled() returns (bool enabled);
+-    SetScreenEnabled(bool aEnabled);
+-
+-    sync GetKeyLightEnabled() returns (bool enabled);
+-    SetKeyLightEnabled(bool aEnabled);
++    SetScreenEnabled(bool enabled);
+ 
+     sync GetCpuSleepAllowed() returns (bool allowed);
+-    SetCpuSleepAllowed(bool aAllowed);
++    SetCpuSleepAllowed(bool allowed);
+ 
+     sync GetScreenBrightness() returns (double brightness);
+-    SetScreenBrightness(double aBrightness);
++    SetScreenBrightness(double brightness);
+ 
+     AdjustSystemClock(int64_t aDeltaMilliseconds);
+     SetTimezone(nsCString aTimezoneSpec);
+diff --git a/hal/sandbox/SandboxHal.cpp b/hal/sandbox/SandboxHal.cpp
+index 635d7e4..07b9b27 100644
+--- a/hal/sandbox/SandboxHal.cpp
++++ b/hal/sandbox/SandboxHal.cpp
+@@ -143,23 +143,9 @@ GetScreenEnabled()
+ }
+ 
+ void
+-SetScreenEnabled(bool aEnabled)
++SetScreenEnabled(bool enabled)
+ {
+-  Hal()->SendSetScreenEnabled(aEnabled);
+-}
+-
+-bool
+-GetKeyLightEnabled()
+-{
+-  bool enabled = false;
+-  Hal()->SendGetKeyLightEnabled(&enabled);
+-  return enabled;
+-}
+-
+-void
+-SetKeyLightEnabled(bool aEnabled)
+-{
+-  Hal()->SendSetKeyLightEnabled(aEnabled);
++  Hal()->SendSetScreenEnabled(enabled);
+ }
+ 
+ bool
+@@ -171,9 +157,9 @@ GetCpuSleepAllowed()
+ }
+ 
+ void
+-SetCpuSleepAllowed(bool aAllowed)
++SetCpuSleepAllowed(bool allowed)
+ {
+-  Hal()->SendSetCpuSleepAllowed(aAllowed);
++  Hal()->SendSetCpuSleepAllowed(allowed);
+ }
+ 
+ double
+@@ -185,9 +171,9 @@ GetScreenBrightness()
+ }
+ 
+ void
+-SetScreenBrightness(double aBrightness)
++SetScreenBrightness(double brightness)
+ {
+-  Hal()->SendSetScreenBrightness(aBrightness);
++  Hal()->SendSetScreenBrightness(brightness);
+ }
+ 
+ bool
+@@ -611,82 +597,62 @@ public:
+   }
+ 
+   virtual bool
+-  RecvGetScreenEnabled(bool* aEnabled) MOZ_OVERRIDE
+-  {
+-    if (!AssertAppProcessPermission(this, "power")) {
+-      return false;
+-    }
+-    *aEnabled = hal::GetScreenEnabled();
+-    return true;
+-  }
+-
+-  virtual bool
+-  RecvSetScreenEnabled(const bool& aEnabled) MOZ_OVERRIDE
+-  {
+-    if (!AssertAppProcessPermission(this, "power")) {
+-      return false;
+-    }
+-    hal::SetScreenEnabled(aEnabled);
+-    return true;
+-  }
+-
+-  virtual bool
+-  RecvGetKeyLightEnabled(bool* aEnabled) MOZ_OVERRIDE
++  RecvGetScreenEnabled(bool *enabled) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    *aEnabled = hal::GetKeyLightEnabled();
++    *enabled = hal::GetScreenEnabled();
+     return true;
+   }
+ 
+   virtual bool
+-  RecvSetKeyLightEnabled(const bool& aEnabled) MOZ_OVERRIDE
++  RecvSetScreenEnabled(const bool &enabled) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    hal::SetKeyLightEnabled(aEnabled);
++    hal::SetScreenEnabled(enabled);
+     return true;
+   }
+ 
+   virtual bool
+-  RecvGetCpuSleepAllowed(bool* aAllowed) MOZ_OVERRIDE
++  RecvGetCpuSleepAllowed(bool *allowed) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    *aAllowed = hal::GetCpuSleepAllowed();
++    *allowed = hal::GetCpuSleepAllowed();
+     return true;
+   }
+ 
+   virtual bool
+-  RecvSetCpuSleepAllowed(const bool& aAllowed) MOZ_OVERRIDE
++  RecvSetCpuSleepAllowed(const bool &allowed) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    hal::SetCpuSleepAllowed(aAllowed);
++    hal::SetCpuSleepAllowed(allowed);
+     return true;
+   }
+ 
+   virtual bool
+-  RecvGetScreenBrightness(double* aBrightness) MOZ_OVERRIDE
++  RecvGetScreenBrightness(double *brightness) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    *aBrightness = hal::GetScreenBrightness();
++    *brightness = hal::GetScreenBrightness();
+     return true;
+   }
+ 
+   virtual bool
+-  RecvSetScreenBrightness(const double& aBrightness) MOZ_OVERRIDE
++  RecvSetScreenBrightness(const double &brightness) MOZ_OVERRIDE
+   {
+     if (!AssertAppProcessPermission(this, "power")) {
+       return false;
+     }
+-    hal::SetScreenBrightness(aBrightness);
++    hal::SetScreenBrightness(brightness);
+     return true;
+   }
+ 
+diff --git a/toolkit/crashreporter/google-breakpad/src/client/linux/minidump_writer/minidump_writer.cc b/toolkit/crashreporter/google-breakpad/src/client/linux/minidump_writer/minidump_writer.cc
+index 34091db..d0f6bc1 100644
+--- a/toolkit/crashreporter/google-breakpad/src/client/linux/minidump_writer/minidump_writer.cc
++++ b/toolkit/crashreporter/google-breakpad/src/client/linux/minidump_writer/minidump_writer.cc
+@@ -125,10 +125,10 @@ void CPUFillFromThreadInfo(MDRawContextX86 *out,
+   out->dr6 = info.dregs[6];
+   out->dr7 = info.dregs[7];
+ 
+-  out->gs = info.regs.xgs;
+-  out->fs = info.regs.xfs;
+-  out->es = info.regs.xes;
+-  out->ds = info.regs.xds;
++  out->gs = info.regs.gs;
++  out->fs = info.regs.fs;
++  out->es = info.regs.es;
++  out->ds = info.regs.ds;
+ 
+   out->edi = info.regs.edi;
+   out->esi = info.regs.esi;
+@@ -139,10 +139,10 @@ void CPUFillFromThreadInfo(MDRawContextX86 *out,
+ 
+   out->ebp = info.regs.ebp;
+   out->eip = info.regs.eip;
+-  out->cs = info.regs.xcs;
++  out->cs = info.regs.cs;
+   out->eflags = info.regs.eflags;
+   out->esp = info.regs.esp;
+-  out->ss = info.regs.xss;
++  out->ss = info.regs.ss;
+ 
+   out->float_save.control_word = info.fpregs.cwd;
+   out->float_save.status_word = info.fpregs.swd;
+diff --git a/toolkit/crashreporter/google-breakpad/src/common/android/include/sys/user.h b/toolkit/crashreporter/google-breakpad/src/common/android/include/sys/user.h
+index d13e5f6..15e64db 100644
+--- a/toolkit/crashreporter/google-breakpad/src/common/android/include/sys/user.h
++++ b/toolkit/crashreporter/google-breakpad/src/common/android/include/sys/user.h
+@@ -80,12 +80,6 @@ struct user_vfpregs {
+ #define _I386_USER_H 1  // Prevent <asm/user.h> conflicts
+ 
+ // GLibc-compatible definitions
+-struct user_regs_struct {
+-  long ebx, ecx, edx, esi, edi, ebp, eax;
+-  long xds, xes, xfs, xgs, orig_eax;
+-  long eip, xcs, eflags, esp, xss;
+-};
+-
+ struct user_fpregs_struct {
+   long cwd, swd, twd, fip, fcs, foo, fos;
+   long st_space[20];
+@@ -99,25 +93,6 @@ struct user_fpxregs_struct {
+   long padding[56];
+ };
+ 
+-struct user {
+-  struct user_regs_struct    regs;
+-  int                        u_fpvalid;
+-  struct user_fpregs_struct  i387;
+-  unsigned long              u_tsize;
+-  unsigned long              u_dsize;
+-  unsigned long              u_ssize;
+-  unsigned long              start_code;
+-  unsigned long              start_stack;
+-  long                       signal;
+-  int                        reserved;
+-  struct user_regs_struct*   u_ar0;
+-  struct user_fpregs_struct* u_fpstate;
+-  unsigned long              magic;
+-  char                       u_comm [32];
+-  int                        u_debugreg [8];
+-};
+-
+-
+ #elif defined(__mips__)
+ 
+ // TODO: Provide some useful definitions here, once the rest of Breakpad
+diff --git a/widget/gonk/libdisplay/FramebufferSurface.cpp b/widget/gonk/libdisplay/FramebufferSurface.cpp
+index 219e9be..650cc3b 100644
+--- a/widget/gonk/libdisplay/FramebufferSurface.cpp
++++ b/widget/gonk/libdisplay/FramebufferSurface.cpp
+@@ -171,7 +171,7 @@ int FramebufferSurface::GetPrevFBAcquireFd() {
+     if (mPrevFBAcquireFence.get() && mPrevFBAcquireFence->isValid()) {
+         return mPrevFBAcquireFence->dup();
+     }
+-    ALOGE("GetPrevFBAcquireFd: FB acquire fence is invalid!");
++    //ALOGE("GetPrevFBAcquireFd: FB acquire fence is invalid!");
+     return -1;
+ }
+ 
+diff --git a/widget/gonk/nativewindow/GonkNativeWindowJB.cpp b/widget/gonk/nativewindow/GonkNativeWindowJB.cpp
+index 8ff80fa..081124e 100755
+--- a/widget/gonk/nativewindow/GonkNativeWindowJB.cpp
++++ b/widget/gonk/nativewindow/GonkNativeWindowJB.cpp
+@@ -151,7 +151,10 @@ void GonkNativeWindow::returnBuffer(TextureClient* client) {
+     }
+ 
+     status_t err;
+-    err = addReleaseFenceLocked(index, fence);
++
++#if ANDROID_VERSION >= 18
++     err = addReleaseFenceLocked(index, fence);
++#endif
+ 
+     err = releaseBufferLocked(index);
+ }

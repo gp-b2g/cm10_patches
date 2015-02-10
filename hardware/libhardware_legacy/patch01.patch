@@ -1,0 +1,29 @@
+diff --git a/include/hardware_legacy/wifi.h b/include/hardware_legacy/wifi.h
+index 1233730..be6a83e 100644
+--- a/include/hardware_legacy/wifi.h
++++ b/include/hardware_legacy/wifi.h
+@@ -145,11 +145,6 @@ const char *wifi_get_fw_path(int fw_type);
+ int wifi_change_fw_path(const char *fwpath);
+ 
+ /**
+- * Set the wifi mode (0 = normal, 1 = ap)
+- */
+-int wifi_set_mode(int mode);
+-
+-/**
+  * Check and create if necessary initial entropy file
+  */
+ #define WIFI_ENTROPY_FILE	"/data/misc/wifi/entropy.bin"
+diff --git a/wifi/wifi.c b/wifi/wifi.c
+index 400bf68..e682134 100644
+--- a/wifi/wifi.c
++++ b/wifi/wifi.c
+@@ -1218,8 +1218,3 @@ int wifi_change_fw_path(const char *fwpath)
+     close(fd);
+     return ret;
+ }
+-
+-int wifi_set_mode(int mode) {
+-    wifi_mode = mode;
+-    return 0;
+-}

@@ -1,0 +1,67 @@
+diff --git a/core/Makefile b/core/Makefile
+index fe3cfd9..caba51b 100644
+--- a/core/Makefile
++++ b/core/Makefile
+@@ -571,7 +571,6 @@ $(if $(BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE),$(hide) echo "cache_fs_type=$(BOARD_CA
+ $(if $(BOARD_CACHEIMAGE_PARTITION_SIZE),$(hide) echo "cache_size=$(BOARD_CACHEIMAGE_PARTITION_SIZE)" >> $(1))
+ $(if $(INTERNAL_USERIMAGES_SPARSE_EXT_FLAG),$(hide) echo "extfs_sparse_flag=$(INTERNAL_USERIMAGES_SPARSE_EXT_FLAG)" >> $(1))
+ $(if $(mkyaffs2_extra_flags),$(hide) echo "mkyaffs2_extra_flags=$(mkyaffs2_extra_flags)" >> $(1))
+-$(if $(filter true, $(strip $(HAVE_SELINUX))), echo "selinux_fc=$(TARGET_ROOT_OUT)/file_contexts" >> $(1))
+ endef
+ 
+ # -----------------------------------------------------------------
+@@ -802,6 +801,20 @@ $(warning Warning: with dexpreopt enabled, you may need a full rebuild.)
+ endif
+ endif
+ 
++# -----------------------------------------------------------------
++# Zip package of system.img
++#
++INSTALLED_SYSTEMIMG_GZ_TARGET := $(PRODUCT_OUT)/system.img.gz
++
++$(INSTALLED_SYSTEMIMG_GZ_TARGET) : $(INSTALLED_SYSTEMIMAGE) | $(MINIGZIP)
++	@echo "Generate system.img.gz"
++	$(MINIGZIP) <$? >$@
++
++.PHONY: systemimg_gz
++systemimg_gz: $(INSTALLED_SYSTEMIMG_GZ_TARGET)
++
++#######
++
+ #######
+ ## system tarball
+ define build-systemtarball-target
+@@ -925,6 +938,16 @@ $(INSTALLED_USERDATAIMAGE_TARGET): $(INTERNAL_USERIMAGES_DEPS) \
+ userdataimage-nodeps: | $(INTERNAL_USERIMAGES_DEPS)
+ 	$(build-userdataimage-target)
+ 
++# -----------------------------------------------------------------
++# Zip package of userdata.img
++#
++INSTALLED_USERDATAIMG_GZ_TARGET := $(PRODUCT_OUT)/userdata.img.gz
++$(INSTALLED_USERDATAIMG_GZ_TARGET) : $(INSTALLED_USERDATAIMAGE_TARGET) | $(MINIGZIP)
++	@echo "Generate userdata.img.gz"
++	$(MINIGZIP) <$? >$@
++.PHONY: userdatamimg_gz
++userdataimg_gz: $(INSTALLED_USERDATAIMG_GZ_TARGET)
++
+ #######
+ ## data partition tarball
+ define build-userdatatarball-target
+diff --git a/core/disabled_modules.mk b/core/disabled_modules.mk
+index 650c694..dce2ccc 100644
+--- a/core/disabled_modules.mk
++++ b/core/disabled_modules.mk
+@@ -1,12 +1,6 @@
+ DISABLED_USER_MODULES := \
+-	system_server \
+-	app_process \
+-	surfaceflinger \
+-	libsystem_server \
+ 	librs_jni \
+-	libRS \
+ 	libandroid_servers \
+-	libsurfaceflinger \
+ 	libtestplugin \
+ 	temp_layoutlib \
+ 	libvideoeditor_jni \

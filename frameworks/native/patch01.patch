@@ -1,0 +1,118 @@
+diff --git a/libs/binder/ProcessState.cpp b/libs/binder/ProcessState.cpp
+index d95fd6f..0a4b432 100644
+--- a/libs/binder/ProcessState.cpp
++++ b/libs/binder/ProcessState.cpp
+@@ -309,7 +309,7 @@ static int open_driver()
+     int fd = open("/dev/binder", O_RDWR);
+     if (fd >= 0) {
+         fcntl(fd, F_SETFD, FD_CLOEXEC);
+-        int vers;
++        int vers = 0;
+         status_t result = ioctl(fd, BINDER_VERSION, &vers);
+         if (result == -1) {
+             ALOGE("Binder ioctl to obtain version failed: %s", strerror(errno));
+diff --git a/libs/gui/BufferQueue.cpp b/libs/gui/BufferQueue.cpp
+index acf6cec..561420b 100644
+--- a/libs/gui/BufferQueue.cpp
++++ b/libs/gui/BufferQueue.cpp
+@@ -32,6 +32,8 @@
+ #include <gui/SurfaceTexture.h>
+ #include <utils/Trace.h>
+ 
++static const nsecs_t DEQUEUE_TIMEOUT_VALUE = seconds(3);
++
+ // Macros for including the BufferQueue name in log messages
+ #define ST_LOGV(x, ...) ALOGV("[%s] "x, mConsumerName.string(), ##__VA_ARGS__)
+ #define ST_LOGD(x, ...) ALOGD("[%s] "x, mConsumerName.string(), ##__VA_ARGS__)
+@@ -426,7 +428,10 @@ status_t BufferQueue::dequeueBuffer(int *outBuf, sp<Fence>& outFence,
+             // the max buffer count to change.
+             tryAgain = found == INVALID_BUFFER_SLOT;
+             if (tryAgain) {
+-                mDequeueCondition.wait(mMutex);
++                if (mDequeueCondition.waitRelative(mMutex, DEQUEUE_TIMEOUT_VALUE)) {
++                    ST_LOGE("dequeueBuffer: time out and will free all buffer!");
++                    freeAllBuffersLocked();
++                }
+             }
+         }
+ 
+diff --git a/opengl/libs/EGL/eglApi.cpp b/opengl/libs/EGL/eglApi.cpp
+index ed1b472..cc5cc4e 100644
+--- a/opengl/libs/EGL/eglApi.cpp
++++ b/opengl/libs/EGL/eglApi.cpp
+@@ -773,7 +773,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
+             }
+ 
+             if (found) {
+-#if USE_FAST_TLS_KEY
++#if defined (__arm__) || defined (__mips__)
+                 addr = gExtensionForwarders[slot];
+ #endif
+                 sGLExtentionMap.add(name, addr);
+diff --git a/services/sensorservice/Android.mk b/services/sensorservice/Android.mk
+index 0214d7e..e8bd086 100644
+--- a/services/sensorservice/Android.mk
++++ b/services/sensorservice/Android.mk
+@@ -9,11 +9,12 @@ LOCAL_SRC_FILES:= \
+     LinearAccelerationSensor.cpp \
+     OrientationSensor.cpp \
+     RotationVectorSensor.cpp \
+-    RotationVectorSensor2.cpp \
++	    RotationVectorSensor2.cpp \
+     SensorDevice.cpp \
+     SensorFusion.cpp \
+     SensorInterface.cpp \
+     SensorService.cpp \
++    VirtualOrientationSensor.cpp
+ 
+ # Legacy virtual sensors used in combination from accelerometer & magnetometer.
+ LOCAL_SRC_FILES += \
+diff --git a/services/sensorservice/SensorService.cpp b/services/sensorservice/SensorService.cpp
+index cd523ce..4cad017 100644
+--- a/services/sensorservice/SensorService.cpp
++++ b/services/sensorservice/SensorService.cpp
+@@ -44,6 +44,7 @@
+ #include "GravitySensor.h"
+ #include "LinearAccelerationSensor.h"
+ #include "OrientationSensor.h"
++#include "VirtualOrientationSensor.h"
+ #include "RotationVectorSensor.h"
+ #include "RotationVectorSensor2.h"
+ #include "SensorFusion.h"
+@@ -84,6 +85,8 @@ void SensorService::onFirstRef()
+         if (count > 0) {
+             ssize_t orientationIndex = -1;
+             bool hasGyro = false;
++            bool hasMagnetometer = false;
++            bool hasAccelerometer = false;
+             uint32_t virtualSensorsNeeds =
+                     (1<<SENSOR_TYPE_GRAVITY) |
+                     (1<<SENSOR_TYPE_LINEAR_ACCELERATION) |
+@@ -99,6 +102,12 @@ void SensorService::onFirstRef()
+                     case SENSOR_TYPE_GYROSCOPE:
+                         hasGyro = true;
+                         break;
++                    case SENSOR_TYPE_MAGNETIC_FIELD:
++                        hasMagnetometer = true;
++                        break;
++                    case SENSOR_TYPE_ACCELEROMETER:
++                        hasAccelerometer = true;
++                        break;
+                     case SENSOR_TYPE_GRAVITY:
+                     case SENSOR_TYPE_LINEAR_ACCELERATION:
+                     case SENSOR_TYPE_ROTATION_VECTOR:
+@@ -107,6 +116,14 @@ void SensorService::onFirstRef()
+                 }
+             }
+ 
++            if (hasAccelerometer && hasMagnetometer && !hasGyro) {
++                // CTS test defines device has to support orientation sensor
++                // if accelerometer sensor and magnetic sensor are available.
++                // However framework does not provide orientation sensor if
++                // no gyro available.
++                // This provide a orientation sensor without fusion support.
++                registerVirtualSensor( new VirtualOrientationSensor(list, count) );
++            }
+             // it's safe to instantiate the SensorFusion object here
+             // (it wants to be instantiated after h/w sensors have been
+             // registered)

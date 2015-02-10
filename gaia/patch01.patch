@@ -1,0 +1,2459 @@
+diff --git a/apps/camera/js/controllers/camera.js b/apps/camera/js/controllers/camera.js
+index af10603..6aa6a35 100644
+--- a/apps/camera/js/controllers/camera.js
++++ b/apps/camera/js/controllers/camera.js
+@@ -284,6 +284,8 @@ CameraController.prototype.setCamera = function(camera) {
+   this.viewfinder.fadeOut(function() {
+     self.camera.setCamera(camera);
+   });
++  this.app.settings.mode.next();
++  this.app.settings.mode.next();
+ };
+ 
+ CameraController.prototype.setFlashMode = function() {
+diff --git a/apps/camera/js/controllers/storage.js b/apps/camera/js/controllers/storage.js
+index 3e6aee5..e2b141b 100644
+--- a/apps/camera/js/controllers/storage.js
++++ b/apps/camera/js/controllers/storage.js
+@@ -181,9 +181,10 @@ StorageController.prototype.storeVideo = function(video) {
+  */
+ StorageController.prototype.updateMaxFileSize = function() {
+   var pictureSize = this.settings.pictureSizes.selected('data');
+-  var bytes = (pictureSize.width * pictureSize.height / 2) + 25000;
++  if (!pictureSize) { return; } // 1.
++  var bytes = (pictureSize.width * pictureSize.height / 2) + 25000; // 2.
+   this.storage.setMaxFileSize(bytes);
+   debug('maxFileSize updated %s', bytes);
+ };
+ 
+-});
+\ No newline at end of file
++});
+diff --git a/apps/fm/index.html b/apps/fm/index.html
+deleted file mode 100644
+index ef3e632..0000000
+--- a/apps/fm/index.html
++++ /dev/null
+@@ -1,61 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-  <head>
+-    <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1">
+-    <meta charset="utf-8" />
+-    <title>FM Radio</title>
+-    <link rel="stylesheet" href="style/fm.css" type="text/css" />
+-    <link rel="resource" type="application/l10n" href="locales/locales.ini" />
+-    <script defer src="shared/js/l10n.js"></script>
+-    <script defer src="shared/js/async_storage.js"></script>
+-    <script defer src="shared/js/airplane_mode_helper.js"></script>
+-
+-    <!-- For perf-measurement related utilities -->
+-    <script defer src="shared/js/performance_testing_helper.js"></script>
+-
+-    <script defer src="js/fm.js"></script>
+-
+-  </head>
+-
+-  <body>
+-    <div id="container">
+-      <div id="frequency-bar">
+-        <div id="frequency-display">
+-          <a id="speaker-switch" href="#speaker" data-speaker-on="false"></a>
+-          <a id="bookmark-button" href="#bookmark" data-bookmarked="false"></a>
+-          <div id="frequency">0</div>
+-        </div>
+-      </div>
+-      <div id="dialer-bar">
+-        <div id="dialer-container">
+-          <div id="frequency-indicator"></div>
+-          <div id="frequency-dialer" class="animation-on"></div>
+-        </div>
+-      </div>
+-      <div id="fav-list">
+-        <div id="fav-list-container"></div>
+-      </div>
+-      <div id="action-bar">
+-        <div>
+-          <a id="frequency-op-seekdown" href="#seekdown"></a>
+-        </div>
+-        <div>
+-          <a id="power-switch" href="#power-switch" data-enabled="false" data-enabling="false"><span></span></a>
+-        </div>
+-        <div>
+-          <a id="frequency-op-seekup" href="#seekup"></a>
+-        </div>
+-      </div>
+-    </div>
+-    <div id="antenna-warning" class="warning" hidden>
+-      <div></div>
+-      <div id="antenna-warning-header" class="warning-header" data-l10n-id="noAntenna">Please plugin your headset</div>
+-      <div id="antenna-warning-body" class="warning-body" data-l10n-id="noAntennaMsg">The FM Radio requires a headset to use as an antenna.</div>
+-    </div>
+-    <div id="airplane-mode-warning" class="warning" hidden>
+-      <div class="warning-header" data-l10n-id="airplaneModeHeader">Airplane mode is on</div>
+-      <div class="warning-body" data-l10n-id="airplaneModeMsg">Turn off Airplane mode to use FM Radio.</div>
+-    </div>
+-  </body>
+-</html>
+-
+diff --git a/apps/fm/js/fm.js b/apps/fm/js/fm.js
+deleted file mode 100644
+index 52242c3..0000000
+--- a/apps/fm/js/fm.js
++++ /dev/null
+@@ -1,908 +0,0 @@
+-'use strict';
+-
+-function $(id) {
+-  return document.getElementById(id);
+-}
+-
+-function $$(expr) {
+-  return document.querySelectorAll(expr);
+-}
+-
+-// XXX fake mozFMRadio object for UI testing on PC
+-var mozFMRadio = navigator.mozFM || navigator.mozFMRadio || {
+-  speakerEnabled: false,
+-
+-  frequency: null,
+-
+-  enabled: false,
+-
+-  antennaAvailable: true,
+-
+-  signalStrength: 1,
+-
+-  frequencyLowerBound: 87.5,
+-
+-  frequencyUpperBound: 108,
+-
+-  channelWidth: 0.1,
+-
+-  onsignalstrengthchange: function emptyFunction() { },
+-
+-  onfrequencychange: function emptyFunction() { },
+-
+-  onenabled: function emptyFunction() { },
+-
+-  ondisabled: function emptyFunction() { },
+-
+-  onantennaavailablechange: function emptyFunction() { },
+-
+-  disable: function fm_disable() {
+-    if (!this.enabled) {
+-      return;
+-    }
+-
+-    this.enabled = false;
+-    var self = this;
+-    window.setTimeout(function() {
+-      self.ondisabled();
+-    }, 500);
+-
+-    return {};
+-  },
+-
+-  enable: function fm_enable(frequency) {
+-    if (this.enabled) {
+-      return;
+-    }
+-
+-    this.enabled = true;
+-    var self = this;
+-    window.setTimeout(function() {
+-      self.onenabled();
+-      self.setFrequency(frequency);
+-    }, 500);
+-
+-    return {};
+-  },
+-
+-  setFrequency: function fm_setFrequency(freq) {
+-    freq = parseFloat(freq.toFixed(1));
+-    var previousValue = this.frequency;
+-    this.frequency = freq;
+-    if (previousValue != freq) {
+-      this.onfrequencychange();
+-    }
+-    return {};
+-  },
+-
+-  seekUp: function fm_seekUp() {
+-    var self = this;
+-    if (this._seekRequest) {
+-      return;
+-    }
+-    this._seekRequest = {};
+-    this._seekTimeout = window.setTimeout(function su_timeout() {
+-      self.setFrequency(self.frequency + 0.5);
+-      if (self._seekRequest.onsuccess) {
+-        self._seekRequest.onsuccess();
+-      }
+-      self._clearSeekRequest();
+-    }, 1000);
+-    return this._seekRequest;
+-  },
+-
+-  seekDown: function fm_seekDown() {
+-    var self = this;
+-    if (this._seekRequest) {
+-      return;
+-    }
+-    this._seekRequest = {};
+-    this._seekTimeout = window.setTimeout(function sd_timeout() {
+-      self.setFrequency(self.frequency - 0.5);
+-      if (self._seekRequest.onsuccess) {
+-        self._seekRequest.onsuccess();
+-      }
+-      self._clearSeekRequest();
+-    }, 1000);
+-    return this._seekRequest;
+-  },
+-
+-  cancelSeek: function fm_cancelSeek() {
+-    this._clearSeekRequest();
+-    var request = {};
+-    window.setTimeout(function() {
+-      if (request.onsuccess) {
+-        request.onsuccess();
+-      }
+-    }, 0);
+-    return request;
+-  },
+-
+-  _clearSeekRequest: function fm_clearSeek() {
+-    if (this._seekTimeout) {
+-      window.clearTimeout(this._seekTimeout);
+-      this._seekTimeout = null;
+-    }
+-    if (this._seekRequest && this._seekRequest.onerror) {
+-      this._seekRequest.onerror();
+-      this._seekRequest = null;
+-    }
+-  }
+-};
+-
+-// XXX fake SpeakerManager object for UI testing on PC
+-(function(aGlobal) {
+-  aGlobal.SpeakerManager = aGlobal.SpeakerManager || aGlobal.MozSpeakerManager;
+-
+-  if (aGlobal.SpeakerManager)
+-    return;
+-
+-  function SpeakerManager() {
+-    this.speakerforced = false;
+-  }
+-
+-  SpeakerManager.prototype = {
+-    set forcespeaker(enable) {
+-      if (this.speakerforced != enable) {
+-        this.speakerforced = enable;
+-        if (this.onspeakerforcedchange) {
+-          this.onspeakerforcedchange();
+-        }
+-      }
+-    }
+-  };
+-
+-  aGlobal.SpeakerManager = SpeakerManager;
+-})(window);
+-
+-function updateFreqUI() {
+-  historyList.add(mozFMRadio.frequency);
+-  frequencyDialer.setFrequency(mozFMRadio.frequency);
+-  var frequency = frequencyDialer.getFrequency();
+-  favoritesList.select(frequency);
+-  $('bookmark-button').dataset.bookmarked = favoritesList.contains(frequency);
+-}
+-
+-function updatePowerUI() {
+-  var enabled = mozFMRadio.enabled;
+-  if (enabled) {
+-    PerformanceTestingHelper.dispatch('fm-radio-enabled');
+-  }
+-  console.log('Power status: ' + (enabled ? 'on' : 'off'));
+-  var powerSwitch = $('power-switch');
+-  powerSwitch.dataset.enabled = enabled;
+-  powerSwitch.dataset.enabling = enabling;
+-}
+-
+-function updateAntennaUI() {
+-  $('antenna-warning').hidden = mozFMRadio.antennaAvailable;
+-}
+-
+-function updateAirplaneModeUI() {
+-  $('airplane-mode-warning').hidden = !airplaneModeEnabled;
+-}
+-
+-var enabling = false;
+-function updateFrequencyBarUI() {
+-  var frequencyBar = $('frequency-bar');
+-  if (enabling) {
+-    frequencyBar.classList.add('dim');
+-  } else {
+-    frequencyBar.classList.remove('dim');
+-  }
+-}
+-
+-function updateEnablingState(enablingState) {
+-  enabling = enablingState;
+-  updatePowerUI();
+-  updateFrequencyBarUI();
+-}
+-
+-var airplaneModeEnabled = false;
+-function enableFMRadio(frequency) {
+-  if (airplaneModeEnabled)
+-    return;
+-
+-  var request = mozFMRadio.enable(frequency);
+-  // Request might fail, see bug862672
+-  request.onerror = function onerror_enableFMRadio(event) {
+-    updateEnablingState(false);
+-  };
+-
+-  updateEnablingState(true);
+-}
+-
+-/**
+- * If the FM radio is seeking currently, cancel it and then set frequency.
+- *
+- * @param {freq} frequency set.
+- */
+-function cancelSeekAndSetFreq(frequency) {
+-  function setFreq() {
+-    mozFMRadio.setFrequency(frequency);
+-  }
+-
+-  var seeking = !!$('power-switch').getAttribute('data-seeking');
+-  if (!seeking) {
+-    setFreq();
+-  } else {
+-    var request = mozFMRadio.cancelSeek();
+-    request.onsuccess = setFreq;
+-    request.onerror = setFreq;
+-  }
+-}
+-
+-var frequencyDialer = {
+-  unit: 2,
+-  _bandUpperBound: 0,
+-  _bandLowerBound: 0,
+-  _minFrequency: 0,
+-  _maxFrequency: 0,
+-  _currentFreqency: 0,
+-  _translateX: 0,
+-
+-  init: function() {
+-    // First thing is to show a warning if there    // is not antenna.
+-    updateAntennaUI();
+-
+-    this._initUI();
+-    this.setFrequency(mozFMRadio.frequency);
+-    this._addEventListeners();
+-  },
+-
+-  _addEventListeners: function() {
+-    function _removeEventListeners() {
+-      document.body.removeEventListener('touchend', fd_body_touchend, false);
+-      document.body.removeEventListener('touchmove', fd_body_touchmove, false);
+-    }
+-
+-    function cloneEvent(evt) {
+-      if ('touches' in evt) {
+-        evt = evt.touches[0];
+-      }
+-      return { x: evt.clientX, y: evt.clientX,
+-               timestamp: evt.timeStamp };
+-    }
+-
+-    var self = this;
+-    var SPEED_THRESHOLD = 0.1;
+-    var currentEvent, startEvent, currentSpeed;
+-    var tunedFrequency = 0;
+-
+-    function toFixed(frequency) {
+-      return parseFloat(frequency.toFixed(1));
+-    }
+-
+-    function _calcSpeed() {
+-      var movingSpace = startEvent.x - currentEvent.x;
+-      var deltaTime = currentEvent.timestamp - startEvent.timestamp;
+-      var speed = movingSpace / deltaTime;
+-      currentSpeed = parseFloat(speed.toFixed(2));
+-    }
+-
+-    function _calcTargetFrequency() {
+-      return tunedFrequency - getMovingSpace() / self._space;
+-    }
+-
+-    function getMovingSpace() {
+-      var movingSpace = currentEvent.x - startEvent.x;
+-      return movingSpace;
+-    }
+-
+-    function fd_body_touchmove(event) {
+-      event.stopPropagation();
+-      currentEvent = cloneEvent(event);
+-
+-      _calcSpeed();
+-
+-      // move dialer
+-      var dialer = $('frequency-dialer');
+-      var translateX = self._translateX + getMovingSpace();
+-      self._translateX = translateX;
+-      var count = dialer.childNodes.length;
+-      for (var i = 0; i < count; i++) {
+-        var child = dialer.childNodes[i];
+-        child.style.MozTransform = 'translateX(' + translateX + 'px)';
+-      }
+-
+-      tunedFrequency = _calcTargetFrequency();
+-      var roundedFrequency = Math.round(tunedFrequency * 10) / 10;
+-
+-      if (roundedFrequency != self._currentFreqency) {
+-        self.setFrequency(toFixed(roundedFrequency), true);
+-      }
+-
+-      startEvent = currentEvent;
+-    }
+-
+-    function fd_body_touchend(event) {
+-      event.stopPropagation();
+-      _removeEventListeners();
+-
+-      // Add animation back
+-      $('frequency-dialer').classList.add('animation-on');
+-      // Add momentum if speed is higher than a given threshold.
+-      if (Math.abs(currentSpeed) > SPEED_THRESHOLD) {
+-        var direction = currentSpeed > 0 ? 1 : -1;
+-        tunedFrequency += Math.min(Math.abs(currentSpeed) * 3, 3) * direction;
+-      }
+-      tunedFrequency = self.setFrequency(toFixed(tunedFrequency));
+-      cancelSeekAndSetFreq(tunedFrequency);
+-
+-      // Reset vars
+-      currentEvent = null;
+-      startEvent = null;
+-      currentSpeed = 0;
+-    }
+-
+-    function fd_touchstart(event) {
+-      event.stopPropagation();
+-
+-      // Stop animation
+-      $('frequency-dialer').classList.remove('animation-on');
+-
+-      startEvent = currentEvent = cloneEvent(event);
+-      tunedFrequency = self._currentFreqency;
+-
+-      _removeEventListeners();
+-      document.body.addEventListener('touchmove', fd_body_touchmove, false);
+-      document.body.addEventListener('touchend', fd_body_touchend, false);
+-    }
+-
+-    $('dialer-container').addEventListener('touchstart', fd_touchstart, false);
+-  },
+-
+-  _initUI: function() {
+-    $('frequency-dialer').innerHTML = '';
+-    var lower = this._bandLowerBound = mozFMRadio.frequencyLowerBound;
+-    var upper = this._bandUpperBound = mozFMRadio.frequencyUpperBound;
+-
+-    var unit = this.unit;
+-    this._minFrequency = lower - lower % unit;
+-    this._maxFrequency = upper + unit - upper % unit;
+-    var unitCount = (this._maxFrequency - this._minFrequency) / unit;
+-
+-    for (var i = 0; i < unitCount; ++i) {
+-      var start = this._minFrequency + i * unit;
+-      start = start < lower ? lower : start;
+-      var end = this._maxFrequency + i * unit + unit;
+-      end = upper < end ? upper : end;
+-      this._addDialerUnit(start, end);
+-    }
+-
+-    // cache the size of dialer
+-    var _dialerUnits = $$('#frequency-dialer .dialer-unit');
+-    var _dialerUnitWidth = _dialerUnits[0].clientWidth;
+-    this._dialerWidth = _dialerUnitWidth * _dialerUnits.length;
+-    this._space = this._dialerWidth /
+-                    (this._maxFrequency - this._minFrequency);
+-
+-    for (var i = 0; i < _dialerUnits.length; i++) {
+-      _dialerUnits[i].style.left = i * _dialerUnitWidth + 'px';
+-    }
+-  },
+-
+-  _addDialerUnit: function(start, end) {
+-    var markStart = start - start % this.unit;
+-    var html = '';
+-
+-    // At the beginning and end of the dial, some of the notches should be
+-    // hidden. To do this, we use an absolutely positioned div mask.
+-    // startMaskWidth and endMaskWidth track how wide that mask should be.
+-    var startMaskWidth = 0;
+-    var endMaskWidth = 0;
+-
+-    // unitWidth is how wide each notch is that needs to be covered.
+-    var unitWidth = 16;
+-
+-    var total = this.unit * 10;     // 0.1MHz
+-    for (var i = 0; i < total; i++) {
+-      var dialValue = markStart + i * 0.1;
+-      if (dialValue < start) {
+-        startMaskWidth += unitWidth;
+-      } else if (dialValue > end) {
+-        endMaskWidth += unitWidth;
+-      }
+-    }
+-
+-    html += '    <div class="dialer-unit-mark-box">';
+-    if (startMaskWidth > 0) {
+-      html += '<div class="dialer-unit-mark-mask-start" style="width: ' +
+-              startMaskWidth + 'px"></div>';
+-    }
+-    if (endMaskWidth > 0) {
+-      html += '<div class="dialer-unit-mark-mask-end" style="width: ' +
+-              endMaskWidth + 'px"></div>';
+-    }
+-    html += '    </div>';
+-
+-    var width = 'width: ' + (100 / this.unit) + '%';
+-    // Show the frequencies on dialer
+-    for (var j = 0; j < this.unit; j++) {
+-      var frequency = Math.floor(markStart) + j;
+-      var showFloor = frequency >= start && frequency <= end;
+-      if (showFloor) {
+-        html += '<div class="dialer-unit-floor" style="' + width + '">' +
+-          frequency + '</div>';
+-      } else {
+-        html += '  <div class="dialer-unit-floor hidden-block" style="' +
+-          width + '">' + frequency + '</div>';
+-      }
+-    }
+-
+-    html += '  </div>';
+-    var unit = document.createElement('div');
+-    unit.className = 'dialer-unit';
+-    unit.innerHTML = html;
+-    $('frequency-dialer').appendChild(unit);
+-  },
+-
+-  _updateUI: function(frequency, ignoreDialer) {
+-    $('frequency').textContent = frequency.toFixed(1);
+-    if (true !== ignoreDialer) {
+-      this._translateX = (this._minFrequency - frequency) * this._space;
+-      var dialer = $('frequency-dialer');
+-      var count = dialer.childNodes.length;
+-      for (var i = 0; i < count; i++) {
+-        dialer.childNodes[i].style.MozTransform =
+-          'translateX(' + this._translateX + 'px)';
+-      }
+-    }
+-  },
+-
+-  setFrequency: function(frequency, ignoreDialer) {
+-    if (frequency < this._bandLowerBound) {
+-      frequency = this._bandLowerBound;
+-    }
+-
+-    if (frequency > this._bandUpperBound) {
+-      frequency = this._bandUpperBound;
+-    }
+-
+-    this._currentFreqency = frequency;
+-    this._updateUI(frequency, ignoreDialer);
+-
+-    return frequency;
+-  },
+-
+-  getFrequency: function() {
+-    return this._currentFreqency;
+-  }
+-};
+-
+-var historyList = {
+-
+-  _historyList: [],
+-
+-  /**
+-   * Storage key name.
+-   * @const
+-   * @type {string}
+-   */
+-  KEYNAME: 'historylist',
+-
+-  /**
+-   * Maximum size of the history
+-   * @const
+-   * @type {integer}
+-   */
+-  SIZE: 1,
+-
+-  init: function hl_init(callback) {
+-    var self = this;
+-    window.asyncStorage.getItem(this.KEYNAME, function storage_getItem(value) {
+-      self._historyList = value || [];
+-      if (typeof callback == 'function') {
+-        callback();
+-      }
+-    });
+-  },
+-
+-  _save: function hl_save() {
+-    window.asyncStorage.setItem(this.KEYNAME, this._historyList);
+-  },
+-
+-  /**
+-   * Add frequency to history list.
+-   *
+-   * @param {freq} frequency to add.
+-   */
+-  add: function hl_add(freq) {
+-    if (freq == null)
+-      return;
+-    var self = this;
+-    self._historyList.push({
+-      name: freq + '',
+-      frequency: freq
+-    });
+-    if (self._historyList.length > self.SIZE)
+-      self._historyList.shift();
+-    self._save();
+-  },
+-
+-  /**
+-   * Get the last frequency tuned
+-   *
+-   * @return {freq} the last frequency tuned.
+-   */
+-  last: function hl_last() {
+-    if (this._historyList.length == 0) {
+-      return null;
+-    }
+-    else {
+-      return this._historyList[this._historyList.length - 1];
+-    }
+-  }
+-
+-};
+-
+-var favoritesList = {
+-  _favList: null,
+-
+-  KEYNAME: 'favlist',
+-
+-  init: function(callback) {
+-    var self = this;
+-    window.asyncStorage.getItem(this.KEYNAME, function storage_getItem(value) {
+-      self._favList = value || { };
+-      self._showListUI();
+-
+-      if (typeof callback == 'function') {
+-        callback();
+-      }
+-    });
+-
+-    var _container = $('fav-list-container');
+-    _container.addEventListener('click', function _onclick(event) {
+-      var frequency = self._getElemFreq(event.target);
+-      if (!frequency) {
+-        return;
+-      }
+-
+-      if (event.target.classList.contains('fav-list-remove-button')) {
+-        // Remove the item from the favorites list.
+-        self.remove(frequency);
+-        updateFreqUI();
+-      } else {
+-        if (mozFMRadio.enabled) {
+-          cancelSeekAndSetFreq(frequency);
+-        } else {
+-          // If fm is disabled, turn the radio on.
+-          enableFMRadio(frequency);
+-        }
+-      }
+-    });
+-  },
+-
+-  _save: function() {
+-    window.asyncStorage.setItem(this.KEYNAME, this._favList);
+-  },
+-
+-  _showListUI: function() {
+-    var self = this;
+-    this.forEach(function(f) {
+-      self._addItemToListUI(f);
+-    });
+-  },
+-
+-  _addItemToListUI: function(item) {
+-    var container = $('fav-list-container');
+-    var elem = document.createElement('div');
+-    elem.id = this._getUIElemId(item);
+-    elem.className = 'fav-list-item';
+-    var html = '';
+-    html += '<div class="fav-list-frequency">';
+-    html += item.frequency.toFixed(1);
+-    html += '</div>';
+-    html += '<div class="fav-list-remove-button"></div>';
+-    elem.innerHTML = html;
+-
+-    // keep list ascending sorted
+-    if (container.childNodes.length == 0) {
+-      container.appendChild(elem);
+-    } else {
+-      var childNodes = container.childNodes;
+-      for (var i = 0; i < childNodes.length; i++) {
+-        var child = childNodes[i];
+-        var elemFreq = this._getElemFreq(child);
+-        if (item.frequency < elemFreq) {
+-          container.insertBefore(elem, child);
+-          break;
+-        } else if (i == childNodes.length - 1) {
+-          container.appendChild(elem);
+-          break;
+-        }
+-      }
+-    }
+-
+-    return elem;
+-  },
+-
+-  _removeItemFromListUI: function(freq) {
+-    if (!this.contains(freq)) {
+-      return;
+-    }
+-
+-    var itemElem = $(this._getUIElemId(this._favList[freq]));
+-    if (itemElem) {
+-      itemElem.parentNode.removeChild(itemElem);
+-    }
+-  },
+-
+-  _getUIElemId: function(item) {
+-    return 'frequency-' + item.frequency;
+-  },
+-
+-  _getElemFreq: function(elem) {
+-    var isParentListItem = elem.parentNode.classList.contains('fav-list-item');
+-    var listItem = isParentListItem ? elem.parentNode : elem;
+-    return parseFloat(listItem.id.substring(listItem.id.indexOf('-') + 1));
+-  },
+-
+-  forEach: function(callback) {
+-    for (var freq in this._favList) {
+-      callback(this._favList[freq]);
+-    }
+-  },
+-
+-  /**
+-   * Check if frequency is in fav list.
+-   *
+-   * @param {number} frequence to check.
+-   *
+-   * @return {boolean} True if freq is in fav list.
+-   */
+-  contains: function(freq) {
+-    if (!this._favList) {
+-      return false;
+-    }
+-    return typeof this._favList[freq] != 'undefined';
+-  },
+-
+-  /**
+-   * Add frequency to fav list.
+-   */
+-  add: function(freq) {
+-    if (!this.contains(freq)) {
+-      this._favList[freq] = {
+-        name: freq + '',
+-        frequency: freq
+-      };
+-
+-      this._save();
+-
+-      // show the item in favorites list.
+-      this._addItemToListUI(this._favList[freq]).scrollIntoView();
+-    }
+-  },
+-
+-  /**
+-   * Remove frequency from fav list.
+-   *
+-   * @param {number} freq to remove.
+-   *
+-   * @return {boolean} True if freq to remove is in fav list.
+-   */
+-  remove: function(freq) {
+-    var exists = this.contains(freq);
+-    this._removeItemFromListUI(freq);
+-    delete this._favList[freq];
+-    this._save();
+-    return exists;
+-  },
+-
+-  select: function(freq) {
+-    var items = $$('#fav-list-container div.fav-list-item');
+-    for (var i = 0; i < items.length; i++) {
+-      var item = items[i];
+-      if (this._getElemFreq(item) == freq) {
+-        item.classList.add('selected');
+-      } else {
+-        item.classList.remove('selected');
+-      }
+-    }
+-  }
+-};
+-
+-function init() {
+-  frequencyDialer.init();
+-
+-  var seeking = false;
+-  function onclick_seekbutton(event) {
+-    var seekButton = this;
+-    var powerSwitch = $('power-switch');
+-    var seeking = !!powerSwitch.getAttribute('data-seeking');
+-    var up = seekButton.id == 'frequency-op-seekup';
+-
+-    function seek() {
+-      powerSwitch.dataset.seeking = true;
+-
+-      var request = up ? mozFMRadio.seekUp() : mozFMRadio.seekDown();
+-
+-      request.onsuccess = function seek_onsuccess() {
+-        powerSwitch.removeAttribute('data-seeking');
+-      };
+-
+-      request.onerror = function seek_onerror() {
+-        powerSwitch.removeAttribute('data-seeking');
+-      };
+-    }
+-
+-    // If the FM radio is seeking channel currently, cancel it and seek again.
+-    if (seeking) {
+-      var request = mozFMRadio.cancelSeek();
+-      request.onsuccess = seek;
+-      request.onerror = seek;
+-    } else {
+-      seek();
+-    }
+-  }
+-
+-  $('frequency-op-seekdown').addEventListener('click',
+-                                   onclick_seekbutton, false);
+-  $('frequency-op-seekup').addEventListener('click',
+-                                   onclick_seekbutton, false);
+-
+-  $('power-switch').addEventListener('click', function toggle_fm() {
+-    if (mozFMRadio.enabled) {
+-      mozFMRadio.disable();
+-    } else {
+-      enableFMRadio(frequencyDialer.getFrequency());
+-    }
+-  }, false);
+-
+-  $('bookmark-button').addEventListener('click', function toggle_bookmark() {
+-    var frequency = frequencyDialer.getFrequency();
+-    if (favoritesList.contains(frequency)) {
+-      favoritesList.remove(frequency);
+-    } else {
+-      favoritesList.add(frequency);
+-    }
+-    updateFreqUI();
+-  }, false);
+-
+-  var speakerManager = new SpeakerManager();
+-  $('speaker-switch').addEventListener('click', function toggle_speaker() {
+-    speakerManager.forcespeaker = !speakerManager.speakerforced;
+-  }, false);
+-
+-  speakerManager.onspeakerforcedchange = function onspeakerforcedchange() {
+-    $('speaker-switch').dataset.speakerOn = speakerManager.speakerforced;
+-  };
+-
+-  mozFMRadio.onfrequencychange = updateFreqUI;
+-  mozFMRadio.onenabled = function() {
+-    updateEnablingState(false);
+-  };
+-  mozFMRadio.ondisabled = function() {
+-    updateEnablingState(false);
+-  };
+-
+-  mozFMRadio.onantennaavailablechange = function onAntennaChange() {
+-    updateAntennaUI();
+-    if (mozFMRadio.antennaAvailable) {
+-      // If the FM radio is enabled or enabling when the antenna is unplugged,
+-      // turn the FM radio on again.
+-      if (!!window._previousFMRadioState || !!window._previousEnablingState) {
+-        enableFMRadio(frequencyDialer.getFrequency());
+-      }
+-    } else {
+-      // Remember the current state of the FM radio
+-      window._previousFMRadioState = mozFMRadio.enabled;
+-      window._previousEnablingState = enabling;
+-      mozFMRadio.disable();
+-    }
+-  };
+-
+-  // Disable the power button and the fav list when the airplane mode is on.
+-  updateAirplaneModeUI();
+-
+-  AirplaneModeHelper.addEventListener('statechange', function(status) {
+-    airplaneModeEnabled = status === 'enabled';
+-    updateAirplaneModeUI();
+-  });
+-
+-  // Load the fav list and enable the FM radio if an antenna is available.
+-  historyList.init(function hl_ready() {
+-    if (mozFMRadio.antennaAvailable) {
+-      // Enable FM immediately
+-      if (historyList.last() && historyList.last().frequency)
+-        enableFMRadio(historyList.last().frequency);
+-      else
+-        enableFMRadio(mozFMRadio.frequencyLowerBound);
+-
+-      favoritesList.init(updateFreqUI);
+-    } else {
+-      // Mark the previous state as True,
+-      // so the FM radio be enabled automatically
+-      // when the headset is plugged.
+-      window._previousFMRadioState = true;
+-      updateAntennaUI();
+-      favoritesList.init();
+-    }
+-    updatePowerUI();
+-
+-    // PERFORMANCE EVENT (5): moz-app-loaded
+-    // Designates that the app is *completely* loaded and all relevant
+-    // "below-the-fold" content exists in the DOM, is marked visible,
+-    // has its events bound and is ready for user interaction. All
+-    // required startup background processing should be complete.
+-    window.dispatchEvent(new CustomEvent('moz-app-loaded'));
+-  });
+-
+-  //
+-  // If the system app is opening an attention screen (because
+-  // of an incoming call or an alarm, e.g.) and if we are
+-  // currently playing the radio then we need to stop the radio
+-  // before the ringer or alarm starts sounding. See bugs 995540
+-  // and 1006200.
+-  //
+-  // XXX We're abusing the settings API here to allow the system app
+-  // to broadcast a message to any certified apps that care. There
+-  // ought to be a better way, but this is a quick and easy way to
+-  // fix a last-minute release blocker.
+-  //
+-  navigator.mozSettings.addObserver(
+-    'private.broadcast.attention_screen_opening',
+-    function(event) {
+-      // An attention screen is in the process of opening. Save the
+-      // current state of the radio and disable.
+-      if (event.settingValue) {
+-        window._previousFMRadioState = mozFMRadio.enabled;
+-        window._previousEnablingState = enabling;
+-        window._previousSpeakerForcedState = speakerManager.speakerforced;
+-        mozFMRadio.disable();
+-      }
+-
+-      // An attention screen is closing.
+-      else {
+-        // If the radio was previously enabled or was in the process
+-        // of becoming enabled, re-enable the radio.
+-        if (!!window._previousFMRadioState || !!window._previousEnablingState) {
+-          // Ensure the antenna is still available before re-starting
+-          // the radio.
+-          if (mozFMRadio.antennaAvailable) {
+-            enableFMRadio(frequencyDialer.getFrequency());
+-          }
+-
+-          // Re-enable the speaker if it was previously forced.
+-          speakerManager.forcespeaker = !!window._previousSpeakerForcedState;
+-        }
+-      }
+-    }
+-  );
+-}
+-
+-window.addEventListener('load', function(e) {
+-  AirplaneModeHelper.ready(function() {
+-    airplaneModeEnabled = AirplaneModeHelper.getStatus() == 'enabled';
+-    init();
+-
+-    // PERFORMANCE EVENT (2): moz-chrome-interactive
+-    // Designates that the app's *core* chrome or navigation interface
+-    // has its events bound and is ready for user interaction.
+-    window.dispatchEvent(new CustomEvent('moz-chrome-interactive'));
+-
+-    // PERFORMANCE EVENT (3): moz-app-visually-complete
+-    // Designates that the app is visually loaded (e.g.: all of the
+-    // "above-the-fold" content exists in the DOM and is marked as
+-    // ready to be displayed).
+-    window.dispatchEvent(new CustomEvent('moz-app-visually-complete'));
+-
+-    // PERFORMANCE EVENT (4): moz-content-interactive
+-    // Designates that the app has its events bound for the minimum
+-    // set of functionality to allow the user to interact with the
+-    // "above-the-fold" content.
+-    window.dispatchEvent(new CustomEvent('moz-content-interactive'));
+-  });
+-}, false);
+-
+-// Turn off radio immediately when window is unloaded.
+-window.addEventListener('unload', function(e) {
+-  mozFMRadio.disable();
+-}, false);
+-
+-// PERFORMANCE EVENT (1): moz-chrome-dom-loaded
+-// Designates that the app's *core* chrome or navigation interface
+-// exists in the DOM and is marked as ready to be displayed.
+-window.dispatchEvent(new CustomEvent('moz-chrome-dom-loaded'));
+diff --git a/apps/fm/jsdoc.json b/apps/fm/jsdoc.json
+deleted file mode 100644
+index 849bc05..0000000
+--- a/apps/fm/jsdoc.json
++++ /dev/null
+@@ -1,8 +0,0 @@
+-{
+-  "fm": {
+-    "src": ["apps/fm/js/**/*.js"],
+-    "options": {
+-      "destination": "docs/fm"
+-    }
+-  }
+-}
+diff --git a/apps/fm/locales/fm.ar.properties b/apps/fm/locales/fm.ar.properties
+deleted file mode 100644
+index d122453..0000000
+--- a/apps/fm/locales/fm.ar.properties
++++ /dev/null
+@@ -1,4 +0,0 @@
+-noAntenna          = قم بتوصيل السماعة
+-noAntennaMsg       = راديو FM يحتاج إلى سماعات متصلة لاستقبال إشارات الراديو.
+-airplaneModeHeader = وضع الطيران مفعل
+-airplaneModeMsg    = ألغِ وضع الطائرة لتستخدم الراديو.
+diff --git a/apps/fm/locales/fm.en-US.properties b/apps/fm/locales/fm.en-US.properties
+deleted file mode 100644
+index 0a6c106..0000000
+--- a/apps/fm/locales/fm.en-US.properties
++++ /dev/null
+@@ -1,4 +0,0 @@
+-noAntenna          = Plug in a headset
+-noAntennaMsg       = FM Radio requires a plugged in headset to receive radio signals.
+-airplaneModeHeader = Airplane mode is on
+-airplaneModeMsg    = Turn off Airplane mode to use FM Radio.
+diff --git a/apps/fm/locales/fm.fr.properties b/apps/fm/locales/fm.fr.properties
+deleted file mode 100644
+index 03db52d..0000000
+--- a/apps/fm/locales/fm.fr.properties
++++ /dev/null
+@@ -1,4 +0,0 @@
+-noAntenna          = Casque débranché
+-noAntennaMsg       = La radio FM nécessite un casque branché pour servir d’antenne.
+-airplaneModeHeader = Le mode avion est activé
+-airplaneModeMsg    = Pour utiliser l’application Radio FM, désactivez le mode avion.
+diff --git a/apps/fm/locales/fm.zh-TW.properties b/apps/fm/locales/fm.zh-TW.properties
+deleted file mode 100644
+index 50199cc..0000000
+--- a/apps/fm/locales/fm.zh-TW.properties
++++ /dev/null
+@@ -1,5 +0,0 @@
+-noAntenna          = 插入耳機
+-noAntennaMsg       = 需要插入耳機才能接收廣播訊號。
+-airplaneModeHeader = 已開啟飛航模式
+-airplaneModeMsg    = 關閉飛航模式以使用 FM 收音機。
+-
+diff --git a/apps/fm/locales/locales.ini b/apps/fm/locales/locales.ini
+deleted file mode 100644
+index 5a17d63..0000000
+--- a/apps/fm/locales/locales.ini
++++ /dev/null
+@@ -1,11 +0,0 @@
+-@import url(fm.en-US.properties)
+-
+-[ar]
+-@import url(fm.ar.properties)
+-
+-[fr]
+-@import url(fm.fr.properties)
+-
+-[zh-TW]
+-@import url(fm.zh-TW.properties)
+-
+diff --git a/apps/fm/manifest.webapp b/apps/fm/manifest.webapp
+deleted file mode 100644
+index bbed28a..0000000
+--- a/apps/fm/manifest.webapp
++++ /dev/null
+@@ -1,43 +0,0 @@
+-{
+-  "name": "FM Radio",
+-  "description": "Gaia FM Radio",
+-  "type": "certified",
+-  "launch_path": "/index.html",
+-  "developer": {
+-    "name": "The Gaia Team",
+-    "url": "https://github.com/mozilla-b2g/gaia"
+-  },
+-  "permissions": {
+-    "storage":{},
+-    "fmradio":{},
+-    "settings":{ "access": "readonly" },
+-    "speaker-control":{}
+-  },
+-  "locales": {
+-    "ar": {
+-      "name": "FM Radio",
+-      "description": "Gaia FM Radio"
+-    },
+-    "en-US": {
+-      "name": "FM Radio",
+-      "description": "Gaia FM Radio"
+-    },
+-    "fr": {
+-      "name": "Radio FM",
+-      "description": "Radio FM Gaia"
+-    },
+-    "zh-TW": {
+-      "name": "收音机",
+-      "description": "收音机"
+-    }
+-  },
+-  "default_locale": "en-US",
+-  "icons": {
+-    "84": "/style/icons/fm_84.png",
+-    "126": "/style/icons/fm_126.png",
+-    "142": "/style/icons/fm_142.png",
+-    "189": "/style/icons/fm_189.png",
+-    "284": "/style/icons/fm_284.png"
+-  },
+-  "orientation": "default"
+-}
+diff --git a/apps/fm/style/fm.css b/apps/fm/style/fm.css
+deleted file mode 100644
+index c432da1..0000000
+--- a/apps/fm/style/fm.css
++++ /dev/null
+@@ -1,499 +0,0 @@
+-html, body {
+-  padding: 0;
+-  border: 0;
+-  margin: 0;
+-  height: 100%;
+-  overflow: hidden;
+-  color: #FFF;
+-  font-size: 10px;
+-}
+-
+-
+-a {
+-  outline: 0 none;
+-  text-decoration: none;
+-  color: #FFF;
+-}
+-
+-a:active {
+-  color: #000;
+-  background-color: #00ABCD;
+-}
+-
+-.hidden-block {
+-  visibility: hidden;
+-}
+-
+-#container {
+-  height: 100%;
+-  width: 100%;
+-  background-color: #2F3337;
+-}
+-
+-#container > div {
+-  position: absolute;
+-  left: 0;
+-  width: 100%;
+-}
+-
+-/****** styles for frequency view *******/
+-#frequency-bar {
+-  border-bottom: 1px solid #24292E;
+-  box-sizing: border-box;
+-  top: 0;
+-  height: 10rem;
+-  width: 100%;
+-  text-align: center;
+-  background-color: #353A41;
+-  overflow: hidden;
+-  transition: background-color 680ms ease;
+-}
+-
+-#frequency-bar.dim {
+-  background-color: #232323;
+-}
+-
+-#frequency-bar > div {
+-  text-align: center;
+-}
+-
+-#frequency-bar a {
+-  position: absolute;
+-  z-index: 1;
+-  line-height: 4rem;
+-  width: 3.8rem;
+-  height: 3.8rem;
+-  font-size: 1.4rem;
+-  border-radius: 50%;
+-  display: inline-block;
+-  margin-top: 3rem;
+-  box-shadow: 0 -.1rem .1rem #111;
+-}
+-
+-#frequency-display {
+-  position: relative;
+-  transition: opacity 680ms ease;
+-}
+-
+-.dim #frequency-display {
+-  opacity: 0.1;
+-}
+-
+-#bookmark-button {
+-  top: 0;
+-  right: 2rem;
+-}
+-
+-#frequency {
+-  font-size: 6rem;
+-  font-weight: 300;
+-  color: #fff;
+-  padding-top: 1.5rem;
+-  position: absolute;
+-  width: 100%;
+-  height: 10rem;
+-  display: block;
+-  top: 0;
+-  left: 0;
+-}
+-
+-#frequency::after {
+-  content: "MHz";
+-  font-size: 1.5rem;
+-  padding-left: 0.3rem;
+-}
+-
+-#bookmark-button {
+-  background: url("images/toggle-fav-star-off.png") no-repeat center center / 4rem;
+-}
+-
+-#bookmark-button:focus {
+-  border-color: #888;
+-}
+-
+-#bookmark-button:active,
+-#bookmark-button[data-bookmarked="true"]:active {
+-  background: #00ABCD url("images/toggle-fav-star-pressed.png") no-repeat center center / 4rem;
+-}
+-
+-#bookmark-button[data-bookmarked="true"] {
+-  background: url("images/toggle-fav-star-on.png") no-repeat center center / 4rem;
+-}
+-
+-#speaker-switch {
+-  top: 0;
+-  left: 2rem;
+-  background: url("images/speaker-off.png") no-repeat center center / 4rem;
+-}
+-
+-#speaker-switch:focus {
+-  border-color: #888;
+-}
+-
+-#speaker-switch:active,
+-#speaker-switch[data-speaker-on="true"]:active {
+-  background: #00ABCD url("images/speaker-pressed.png") no-repeat center center / 4rem;
+-}
+-
+-#speaker-switch[data-speaker-on="true"] {
+-  background: url("images/speaker-on.png") no-repeat center center / 4rem;
+-}
+-/*****  end  *****/
+-
+-/**** styles for frequency dialer *****/
+-#dialer-bar {
+-  top: 10rem;
+-  font-size: 1.4rem;
+-  font-weight: 400;
+-  height: 9rem;
+-  overflow: hidden;
+-  background: #2F3337;
+-  color: #FFF;
+-  box-shadow: 0 0.2rem 0.4rem rgba(0, 0, 0, 0.3);
+-}
+-
+-#dialer-container {
+-  box-shadow: inset 0 0.05rem 0 #3A3F44;
+-  position: relative;
+-  padding-left: 50%;
+-  margin: 0 2rem;
+-  height: 100%;
+-}
+-
+-#dialer-container:before,
+-#dialer-container:after {
+-  content: "";
+-  background-color: #474E57;
+-  box-shadow: inset 0 0.05rem 0 #585E65;
+-  position: absolute;
+-  width: 2rem;
+-  height: 100%;
+-  z-index: 1;
+-  pointer-events: none;
+-}
+-
+-#dialer-container:before {
+-  border-right: 0.1rem solid #24292E;
+-  left: -2rem;
+-}
+-
+-#dialer-container:after {
+-  border-left: 0.1rem solid #24292E;
+-  right: -2rem;
+-}
+-
+-#frequency-indicator {
+-  border-radius: 50%/0.1rem;
+-  height: 8.6rem;
+-  width: 1.6rem;
+-  margin: 0.6rem 0 0 -0.8rem;
+-  position: absolute;
+-  z-index: 1;
+-  background: url(images/selector.png) no-repeat center center / 1.6rem;
+-  top: 0;
+-  left: 50%;
+-}
+-
+-div.animation-on > div {
+-  transition: -moz-transform 0.4s ease 0s;
+-}
+-
+-#frequency-dialer {
+-  display: inline-block;
+-  display: -moz-inline-box;
+-  -moz-user-select: none;
+-  width: 100%;
+-  margin-left: -2.2rem;
+-  position: absolute;
+-  top: 0;
+-}
+-
+-#frequency-dialer .dialer-unit-mark-box {
+-  background: url(images/dial-notches.png) no-repeat 0 3.4rem / 32rem;
+-  overflow: hidden;
+-  height: 5.5rem;
+-}
+-
+-#frequency-dialer .dialer-unit {
+-  text-align: left;
+-  height: 7.5rem;
+-  position: absolute;
+-  width: 32rem;
+-}
+-
+-/* The beginning and end of the dial are masked to hide notches that
+-are out of range. */
+-.dialer-unit-mark-mask-start,
+-.dialer-unit-mark-mask-end {
+-  background-color: #2F3337;
+-  display: block;
+-  height: 5.5rem;
+-  position: absolute;
+-}
+-/* The mask at the end should be jogged left by 0.3rem, since the
+-mask is intended to cover everything except the first notch. */
+-.dialer-unit-mark-mask-end {
+-  margin-left: .3rem;
+-}
+-
+-#frequency-dialer .dialer-unit-floor {
+-  color: #AAA;
+-  float: left;
+-}
+-/**** end *******/
+-
+-/***** styles for favorites list ******/
+-div#fav-list {
+-  overflow: auto;
+-  top: 19rem;
+-  bottom: 9rem;
+-}
+-
+-div#fav-list-container {
+-  max-height: 100%;
+-  position: absolute;
+-  bottom: 0;
+-  width: 100%;
+-}
+-
+-div#fav-list-container > div:before {
+-  content: "";
+-  position: absolute;
+-  top: 0;
+-  left: 2rem;
+-  right: 2rem;
+-  width: calc(100% - 4rem);
+-  height: .1rem;
+-  background-color: #3D4045;
+-}
+-
+-div#fav-list-container > div {
+-  position: relative;
+-  font-size: 2.3rem;
+-  font-weight: 300;
+-  height: 4.4rem;
+-  padding-bottom: 0.2rem;
+-  clear: both;
+-}
+-
+-div#fav-list-container > div:active {
+-  background-color: rgba(52,140,158, .6);
+-}
+-
+-div#fav-list-container > div:active:before,
+-div#fav-list-container > div:active + div:before {
+-  background-color: transparent;
+-}
+-
+-div#fav-list-container div.fav-list-remove-button {
+-  height: 100%;
+-  width: 4rem;
+-  margin-left: 2rem;
+-  float: right;
+-  cursor: pointer;
+-  background: url("images/fav-star.png") no-repeat center center / 1.4rem;
+-}
+-
+-div#fav-list-container div.selected div.fav-list-remove-button {
+-  background: url("images/fav-star-selected.png") no-repeat center center / 1.4rem;
+-}
+-
+-div#fav-list-container div.fav-list-frequency {
+-  float: right;
+-  padding: 0.8rem -moz-calc(50% - 2.4rem) 0 0;
+-  text-align: right;
+-  width: 6rem;
+-}
+-
+-div#fav-list-container div.fav-list-frequency::after {
+-  content: "MHz";
+-  font-size: 1.5rem;
+-  position: absolute;
+-  padding: .6rem .2rem 0 1rem;
+-}
+-/***** end *****/
+-
+-/***** styles for status bars *****/
+-#action-bar {
+-  bottom: 0;
+-  border-top: .1rem solid #3A3E46;
+-  box-shadow: 0 0 .2rem #111;
+-  height: 9rem;
+-  overflow: hidden;
+-}
+-
+-/* Styles for action bar */
+-/* FIX: it doesn't hide itself */
+-#action-bar[hidden] {
+-  display: none;
+-}
+-
+-#action-bar > div {
+-  text-align: center;
+-  padding: 1rem 0 0;
+-  width: 33.333%;
+-  float: left;
+-}
+-
+-#action-bar > div:first-child {
+-  text-align: right;
+-}
+-
+-#action-bar > div:last-child {
+-  text-align: left;
+-}
+-
+-#action-bar a {
+-  display: inline-block;
+-  border: none;
+-  font-size: 2.5rem;
+-  width: 7rem;
+-  height: 7rem;
+-  border-radius: 50%;
+-  text-align: center;
+-  box-shadow: 0 .1rem .1rem #A8A8A8 inset, 0 .2rem 0 #1e2226;
+-}
+-
+-#action-bar a:active {
+-  color: #FFF;
+-  background-color: #00ABCD;
+-  box-shadow: 0 .1rem .1rem #3F6978 inset, 0 .2rem 0 #1e2226;
+-}
+-
+-#power-switch, #power-switch span {
+-  background-image: url(images/play.png), url(images/reflection-72.png);
+-  background-repeat: no-repeat, no-repeat;
+-  background-color: transparent;
+-  background-position: center center, 0 0;
+-  background-size: 7.2rem;
+-  overflow: hidden;
+-  position: relative;
+-}
+-
+-#power-switch:active {
+-  background-image: url(images/play.png);
+-}
+-
+-#power-switch[data-enabled="true"] {
+-  background-image: url(images/stop.png), url(images/reflection-72.png);
+-}
+-
+-#power-switch[data-enabled="true"]:active {
+-  background-image: url(images/stop.png);
+-}
+-
+-#power-switch span {
+-  background-image: url(images/spinner-FMRadio.png);
+-  background-size: 6.6rem;
+-  display: none;
+-  height: 6.6rem;
+-  left: 0.2rem;
+-  position: absolute;
+-  top: 0.2rem;
+-  width: 6.6rem;
+-}
+-
+-#power-switch[data-enabling="true"] span,
+-#power-switch[data-seeking="true"] span {
+-  animation: 0.9s spinner-animation infinite steps(30);
+-  display: block;
+-}
+-
+-@keyframes spinner-animation {
+-  from {
+-    transform: rotate(1deg);
+-  }
+-  to {
+-    transform: rotate(360deg);
+-  }
+-}
+-
+-a#frequency-op-seekdown {
+-  width: 5rem;
+-  height: 5rem;
+-  margin: 1rem 0;
+-  background-image: url(images/seekdown.png), url(images/reflection-56.png);
+-  background-repeat: no-repeat, no-repeat;
+-  background-color: transparent;
+-  background-position: center center;
+-  background-size: 5.6rem;
+-}
+-
+-a#frequency-op-seekdown:active {
+-  background-image: url(images/seekdown.png);
+-}
+-
+-a#frequency-op-seekup {
+-  width: 5rem;
+-  height: 5rem;
+-  margin: 1rem 0;
+-  background-image: url(images/seekup.png), url(images/reflection-56.png);
+-  background-repeat: no-repeat, no-repeat;
+-  background-color: transparent;
+-  background-position: center center;
+-  background-size: 5.6rem;
+-}
+-
+-a#frequency-op-seekup:active {
+-  background-image: url(images/seekup.png);
+-}
+-/**** end ****/
+-
+-/***  styles for  warning box ****/
+-.warning {
+-  position: absolute;
+-  width: 100%;
+-  height: 100%;
+-  top: 0;
+-  left: 0;
+-  color: #FFF;
+-  background: url(images/popup-texture.png) transparent repeat 0 0 / 100% 100%;
+-}
+-
+-.warning .warning-header {
+-  padding: 1rem 3rem 1rem 3rem;
+-  font-weight: normal;
+-  font-size: 1.9rem;
+-  color: #fff;
+-}
+-
+-.warning .warning-body {
+-  font-weight: 300;
+-  font-size: 2.5rem;
+-  padding: .5rem;
+-  border-top: .1rem solid #686868;
+-  margin: 0 2.5rem;
+-}
+-
+-/* Press (default & recommend) */
+-.warning .menu button:active {
+-  border-color: #008aaa;
+-  color: #333;
+-}
+-/**** end ****/
+-
+-/***  styles for antenna warning box ****/
+-#antenna-warning {
+-  z-index: 2;
+-}
+-
+-#antenna-warning > div:first-child {
+-  height: 60%;
+-  background: url(images/headset.png) no-repeat center center / 18.4rem;
+-}
+-
+-#antenna-warning .warning-header {
+-  margin-top: -2.5rem;
+-}
+-/******* end *******/
+-
+-/***  styles for airplane mode warning box ****/
+-#airplane-mode-warning {
+-  z-index: 3;
+-}
+-
+-#airplane-mode-warning .warning-header {
+-  margin-top: 50%;
+-}
+-/******* end *******/
+-
+diff --git a/apps/fm/style/icons/fm_126.png b/apps/fm/style/icons/fm_126.png
+deleted file mode 100644
+index 9076ae3..0000000
+Binary files a/apps/fm/style/icons/fm_126.png and /dev/null differ
+diff --git a/apps/fm/style/icons/fm_142.png b/apps/fm/style/icons/fm_142.png
+deleted file mode 100644
+index 132f303..0000000
+Binary files a/apps/fm/style/icons/fm_142.png and /dev/null differ
+diff --git a/apps/fm/style/icons/fm_189.png b/apps/fm/style/icons/fm_189.png
+deleted file mode 100644
+index ae859ad..0000000
+Binary files a/apps/fm/style/icons/fm_189.png and /dev/null differ
+diff --git a/apps/fm/style/icons/fm_284.png b/apps/fm/style/icons/fm_284.png
+deleted file mode 100644
+index 969beb0..0000000
+Binary files a/apps/fm/style/icons/fm_284.png and /dev/null differ
+diff --git a/apps/fm/style/icons/fm_84.png b/apps/fm/style/icons/fm_84.png
+deleted file mode 100644
+index d641978..0000000
+Binary files a/apps/fm/style/icons/fm_84.png and /dev/null differ
+diff --git a/apps/fm/style/images/app-texture.png b/apps/fm/style/images/app-texture.png
+deleted file mode 100644
+index 2e62f8d..0000000
+Binary files a/apps/fm/style/images/app-texture.png and /dev/null differ
+diff --git a/apps/fm/style/images/app-texture@1.5x.png b/apps/fm/style/images/app-texture@1.5x.png
+deleted file mode 100644
+index 53d4fcd..0000000
+Binary files a/apps/fm/style/images/app-texture@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/app-texture@2.25x.png b/apps/fm/style/images/app-texture@2.25x.png
+deleted file mode 100644
+index 72e1077..0000000
+Binary files a/apps/fm/style/images/app-texture@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/app-texture@2x.png b/apps/fm/style/images/app-texture@2x.png
+deleted file mode 100644
+index f54e028..0000000
+Binary files a/apps/fm/style/images/app-texture@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/dial-notches.png b/apps/fm/style/images/dial-notches.png
+deleted file mode 100644
+index 4e6ae79..0000000
+Binary files a/apps/fm/style/images/dial-notches.png and /dev/null differ
+diff --git a/apps/fm/style/images/dial-notches@1.5x.png b/apps/fm/style/images/dial-notches@1.5x.png
+deleted file mode 100644
+index 2f983a7..0000000
+Binary files a/apps/fm/style/images/dial-notches@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/dial-notches@2.25x.png b/apps/fm/style/images/dial-notches@2.25x.png
+deleted file mode 100644
+index c05dab6..0000000
+Binary files a/apps/fm/style/images/dial-notches@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/dial-notches@2x.png b/apps/fm/style/images/dial-notches@2x.png
+deleted file mode 100644
+index 20d511c..0000000
+Binary files a/apps/fm/style/images/dial-notches@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star-selected.png b/apps/fm/style/images/fav-star-selected.png
+deleted file mode 100644
+index 78e0d36..0000000
+Binary files a/apps/fm/style/images/fav-star-selected.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star-selected@1.5x.png b/apps/fm/style/images/fav-star-selected@1.5x.png
+deleted file mode 100644
+index 9657eb2..0000000
+Binary files a/apps/fm/style/images/fav-star-selected@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star-selected@2.25x.png b/apps/fm/style/images/fav-star-selected@2.25x.png
+deleted file mode 100644
+index 57cbc55..0000000
+Binary files a/apps/fm/style/images/fav-star-selected@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star-selected@2x.png b/apps/fm/style/images/fav-star-selected@2x.png
+deleted file mode 100644
+index 7e1e491..0000000
+Binary files a/apps/fm/style/images/fav-star-selected@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star.png b/apps/fm/style/images/fav-star.png
+deleted file mode 100644
+index 5763f5b..0000000
+Binary files a/apps/fm/style/images/fav-star.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star@1.5x.png b/apps/fm/style/images/fav-star@1.5x.png
+deleted file mode 100644
+index 4a4d572..0000000
+Binary files a/apps/fm/style/images/fav-star@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star@2.25x.png b/apps/fm/style/images/fav-star@2.25x.png
+deleted file mode 100644
+index fa207d0..0000000
+Binary files a/apps/fm/style/images/fav-star@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/fav-star@2x.png b/apps/fm/style/images/fav-star@2x.png
+deleted file mode 100644
+index 4d0122f..0000000
+Binary files a/apps/fm/style/images/fav-star@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/headset.png b/apps/fm/style/images/headset.png
+deleted file mode 100644
+index 676454b..0000000
+Binary files a/apps/fm/style/images/headset.png and /dev/null differ
+diff --git a/apps/fm/style/images/headset@1.5x.png b/apps/fm/style/images/headset@1.5x.png
+deleted file mode 100644
+index aaa83ff..0000000
+Binary files a/apps/fm/style/images/headset@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/headset@2.25x.png b/apps/fm/style/images/headset@2.25x.png
+deleted file mode 100644
+index 7bd0330..0000000
+Binary files a/apps/fm/style/images/headset@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/headset@2x.png b/apps/fm/style/images/headset@2x.png
+deleted file mode 100644
+index c31b6eb..0000000
+Binary files a/apps/fm/style/images/headset@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/play.png b/apps/fm/style/images/play.png
+deleted file mode 100644
+index 820ddb4..0000000
+Binary files a/apps/fm/style/images/play.png and /dev/null differ
+diff --git a/apps/fm/style/images/play@1.5x.png b/apps/fm/style/images/play@1.5x.png
+deleted file mode 100644
+index 8b49aaa..0000000
+Binary files a/apps/fm/style/images/play@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/play@2.25x.png b/apps/fm/style/images/play@2.25x.png
+deleted file mode 100644
+index 58c64e7..0000000
+Binary files a/apps/fm/style/images/play@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/play@2x.png b/apps/fm/style/images/play@2x.png
+deleted file mode 100644
+index a84ad0b..0000000
+Binary files a/apps/fm/style/images/play@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/popup-texture.png b/apps/fm/style/images/popup-texture.png
+deleted file mode 100644
+index 0a6ab41..0000000
+Binary files a/apps/fm/style/images/popup-texture.png and /dev/null differ
+diff --git a/apps/fm/style/images/popup-texture@1.5x.png b/apps/fm/style/images/popup-texture@1.5x.png
+deleted file mode 100644
+index 91e522f..0000000
+Binary files a/apps/fm/style/images/popup-texture@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/popup-texture@2.25x.png b/apps/fm/style/images/popup-texture@2.25x.png
+deleted file mode 100644
+index 43c54cc..0000000
+Binary files a/apps/fm/style/images/popup-texture@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/popup-texture@2x.png b/apps/fm/style/images/popup-texture@2x.png
+deleted file mode 100644
+index 99745ab..0000000
+Binary files a/apps/fm/style/images/popup-texture@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-56.png b/apps/fm/style/images/reflection-56.png
+deleted file mode 100644
+index 94dfc7f..0000000
+Binary files a/apps/fm/style/images/reflection-56.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-56@1.5x.png b/apps/fm/style/images/reflection-56@1.5x.png
+deleted file mode 100644
+index 09608f4..0000000
+Binary files a/apps/fm/style/images/reflection-56@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-56@2.25x.png b/apps/fm/style/images/reflection-56@2.25x.png
+deleted file mode 100644
+index 4d5363b..0000000
+Binary files a/apps/fm/style/images/reflection-56@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-56@2x.png b/apps/fm/style/images/reflection-56@2x.png
+deleted file mode 100644
+index ea33d53..0000000
+Binary files a/apps/fm/style/images/reflection-56@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-72.png b/apps/fm/style/images/reflection-72.png
+deleted file mode 100644
+index 6d27464..0000000
+Binary files a/apps/fm/style/images/reflection-72.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-72@1.5x.png b/apps/fm/style/images/reflection-72@1.5x.png
+deleted file mode 100644
+index e3de4cb..0000000
+Binary files a/apps/fm/style/images/reflection-72@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-72@2.25x.png b/apps/fm/style/images/reflection-72@2.25x.png
+deleted file mode 100644
+index 66627c6..0000000
+Binary files a/apps/fm/style/images/reflection-72@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/reflection-72@2x.png b/apps/fm/style/images/reflection-72@2x.png
+deleted file mode 100644
+index daaecb0..0000000
+Binary files a/apps/fm/style/images/reflection-72@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekdown.png b/apps/fm/style/images/seekdown.png
+deleted file mode 100644
+index ad8c7ca..0000000
+Binary files a/apps/fm/style/images/seekdown.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekdown@1.5x.png b/apps/fm/style/images/seekdown@1.5x.png
+deleted file mode 100644
+index 1495322..0000000
+Binary files a/apps/fm/style/images/seekdown@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekdown@2.25x.png b/apps/fm/style/images/seekdown@2.25x.png
+deleted file mode 100644
+index 5d762c8..0000000
+Binary files a/apps/fm/style/images/seekdown@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekdown@2x.png b/apps/fm/style/images/seekdown@2x.png
+deleted file mode 100644
+index fea5800..0000000
+Binary files a/apps/fm/style/images/seekdown@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekup.png b/apps/fm/style/images/seekup.png
+deleted file mode 100644
+index ab60c37..0000000
+Binary files a/apps/fm/style/images/seekup.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekup@1.5x.png b/apps/fm/style/images/seekup@1.5x.png
+deleted file mode 100644
+index 6461e4f..0000000
+Binary files a/apps/fm/style/images/seekup@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekup@2.25x.png b/apps/fm/style/images/seekup@2.25x.png
+deleted file mode 100644
+index 1d8ed47..0000000
+Binary files a/apps/fm/style/images/seekup@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/seekup@2x.png b/apps/fm/style/images/seekup@2x.png
+deleted file mode 100644
+index 35f9ca7..0000000
+Binary files a/apps/fm/style/images/seekup@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/selector.png b/apps/fm/style/images/selector.png
+deleted file mode 100644
+index 242734b..0000000
+Binary files a/apps/fm/style/images/selector.png and /dev/null differ
+diff --git a/apps/fm/style/images/selector@1.5x.png b/apps/fm/style/images/selector@1.5x.png
+deleted file mode 100644
+index c93fe86..0000000
+Binary files a/apps/fm/style/images/selector@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/selector@2.25x.png b/apps/fm/style/images/selector@2.25x.png
+deleted file mode 100644
+index c760c5c..0000000
+Binary files a/apps/fm/style/images/selector@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/selector@2x.png b/apps/fm/style/images/selector@2x.png
+deleted file mode 100644
+index 0154031..0000000
+Binary files a/apps/fm/style/images/selector@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-off.png b/apps/fm/style/images/speaker-off.png
+deleted file mode 100644
+index 1311ac8..0000000
+Binary files a/apps/fm/style/images/speaker-off.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-off@1.5x.png b/apps/fm/style/images/speaker-off@1.5x.png
+deleted file mode 100644
+index 4c4d252..0000000
+Binary files a/apps/fm/style/images/speaker-off@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-off@2.25x.png b/apps/fm/style/images/speaker-off@2.25x.png
+deleted file mode 100644
+index 4be25aa..0000000
+Binary files a/apps/fm/style/images/speaker-off@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-off@2x.png b/apps/fm/style/images/speaker-off@2x.png
+deleted file mode 100644
+index b2caf63..0000000
+Binary files a/apps/fm/style/images/speaker-off@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-on.png b/apps/fm/style/images/speaker-on.png
+deleted file mode 100644
+index b4a3fef..0000000
+Binary files a/apps/fm/style/images/speaker-on.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-on@1.5x.png b/apps/fm/style/images/speaker-on@1.5x.png
+deleted file mode 100644
+index 4dcb3fc..0000000
+Binary files a/apps/fm/style/images/speaker-on@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-on@2.25x.png b/apps/fm/style/images/speaker-on@2.25x.png
+deleted file mode 100644
+index ac69d97..0000000
+Binary files a/apps/fm/style/images/speaker-on@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-on@2x.png b/apps/fm/style/images/speaker-on@2x.png
+deleted file mode 100644
+index dd40158..0000000
+Binary files a/apps/fm/style/images/speaker-on@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-pressed.png b/apps/fm/style/images/speaker-pressed.png
+deleted file mode 100644
+index aa13cca..0000000
+Binary files a/apps/fm/style/images/speaker-pressed.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-pressed@1.5x.png b/apps/fm/style/images/speaker-pressed@1.5x.png
+deleted file mode 100644
+index 65870ae..0000000
+Binary files a/apps/fm/style/images/speaker-pressed@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-pressed@2.25x.png b/apps/fm/style/images/speaker-pressed@2.25x.png
+deleted file mode 100644
+index 021444d..0000000
+Binary files a/apps/fm/style/images/speaker-pressed@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/speaker-pressed@2x.png b/apps/fm/style/images/speaker-pressed@2x.png
+deleted file mode 100644
+index 8722a68..0000000
+Binary files a/apps/fm/style/images/speaker-pressed@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/spinner-FMRadio.png b/apps/fm/style/images/spinner-FMRadio.png
+deleted file mode 100644
+index 2344117..0000000
+Binary files a/apps/fm/style/images/spinner-FMRadio.png and /dev/null differ
+diff --git a/apps/fm/style/images/spinner-FMRadio@1.5x.png b/apps/fm/style/images/spinner-FMRadio@1.5x.png
+deleted file mode 100644
+index abd87f2..0000000
+Binary files a/apps/fm/style/images/spinner-FMRadio@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/spinner-FMRadio@2.25x.png b/apps/fm/style/images/spinner-FMRadio@2.25x.png
+deleted file mode 100644
+index 146eb76..0000000
+Binary files a/apps/fm/style/images/spinner-FMRadio@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/spinner-FMRadio@2x.png b/apps/fm/style/images/spinner-FMRadio@2x.png
+deleted file mode 100644
+index ad92eea..0000000
+Binary files a/apps/fm/style/images/spinner-FMRadio@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/stop.png b/apps/fm/style/images/stop.png
+deleted file mode 100644
+index a40a751..0000000
+Binary files a/apps/fm/style/images/stop.png and /dev/null differ
+diff --git a/apps/fm/style/images/stop@1.5x.png b/apps/fm/style/images/stop@1.5x.png
+deleted file mode 100644
+index 4d40639..0000000
+Binary files a/apps/fm/style/images/stop@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/stop@2.25x.png b/apps/fm/style/images/stop@2.25x.png
+deleted file mode 100644
+index 2780c4b..0000000
+Binary files a/apps/fm/style/images/stop@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/stop@2x.png b/apps/fm/style/images/stop@2x.png
+deleted file mode 100644
+index 4cfb41a..0000000
+Binary files a/apps/fm/style/images/stop@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-off.png b/apps/fm/style/images/toggle-fav-star-off.png
+deleted file mode 100644
+index a513495..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-off.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-off@1.5x.png b/apps/fm/style/images/toggle-fav-star-off@1.5x.png
+deleted file mode 100644
+index 504d2ff..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-off@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-off@2.25x.png b/apps/fm/style/images/toggle-fav-star-off@2.25x.png
+deleted file mode 100644
+index 409b49b..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-off@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-off@2x.png b/apps/fm/style/images/toggle-fav-star-off@2x.png
+deleted file mode 100644
+index 1e5d152..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-off@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-on.png b/apps/fm/style/images/toggle-fav-star-on.png
+deleted file mode 100644
+index f850177..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-on.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-on@1.5x.png b/apps/fm/style/images/toggle-fav-star-on@1.5x.png
+deleted file mode 100644
+index 2749253..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-on@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-on@2.25x.png b/apps/fm/style/images/toggle-fav-star-on@2.25x.png
+deleted file mode 100644
+index c37a8b1..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-on@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-on@2x.png b/apps/fm/style/images/toggle-fav-star-on@2x.png
+deleted file mode 100644
+index 33a6ee4..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-on@2x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-pressed.png b/apps/fm/style/images/toggle-fav-star-pressed.png
+deleted file mode 100644
+index a7bba32..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-pressed.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-pressed@1.5x.png b/apps/fm/style/images/toggle-fav-star-pressed@1.5x.png
+deleted file mode 100644
+index 89b4e7c..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-pressed@1.5x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-pressed@2.25x.png b/apps/fm/style/images/toggle-fav-star-pressed@2.25x.png
+deleted file mode 100644
+index 3a9aefe..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-pressed@2.25x.png and /dev/null differ
+diff --git a/apps/fm/style/images/toggle-fav-star-pressed@2x.png b/apps/fm/style/images/toggle-fav-star-pressed@2x.png
+deleted file mode 100644
+index 460caa0..0000000
+Binary files a/apps/fm/style/images/toggle-fav-star-pressed@2x.png and /dev/null differ
+diff --git a/apps/fm/test/unit/.jshintrc b/apps/fm/test/unit/.jshintrc
+deleted file mode 100644
+index 6c38998..0000000
+--- a/apps/fm/test/unit/.jshintrc
++++ /dev/null
+@@ -1,17 +0,0 @@
+-{
+-  "extends": "../../../../.jshintrc",
+-  "predef": [
+-    "assert",
+-    "suite",
+-    "test",
+-    "setup",
+-    "teardown",
+-    "suiteSetup",
+-    "suiteTeardown",
+-    "require",
+-    "requireApp",
+-    "sinon",
+-    "mocha",
+-    "loadBodyHTML"
+-  ]
+-}
+diff --git a/apps/fm/test/unit/fm_test.js b/apps/fm/test/unit/fm_test.js
+deleted file mode 100644
+index fde04ca..0000000
+--- a/apps/fm/test/unit/fm_test.js
++++ /dev/null
+@@ -1,388 +0,0 @@
+-requireApp('shared/js/airplane_mode_helper.js');
+-requireApp('fm/js/fm.js');
+-
+-var PerformanceTestingHelper = {
+-  dispatch: function() { }
+-};
+-
+-suite('FM', function() {
+-  var tempNode;
+-
+-  function setFrequency(frequency) {
+-    var setFreq = frequencyDialer.setFrequency(frequency);
+-    if (frequency < mozFMRadio.frequencyLowerBound) {
+-      assert.equal(setFreq, mozFMRadio.frequencyLowerBound);
+-    } else if (frequency > mozFMRadio.frequencyUpperBound) {
+-      assert.equal(setFreq, mozFMRadio.frequencyUpperBound);
+-    } else {
+-      assert.equal(setFreq, frequency);
+-    }
+-  }
+-
+-  suite('frequency dialer', function() {
+-
+-    suiteSetup(function() {
+-      tempNode = document.createElement('div');
+-      tempNode.id = 'test';
+-      tempNode.innerHTML =
+-        '<div id="frequency-bar">' +
+-        '  <div id="frequency-display">' +
+-        '    <a id="bookmark-button" href="#bookmark"' +
+-        '      data-bookmarked="false"></a>' +
+-        '    <div id="frequency">0</div>' +
+-        '  </div>' +
+-        '</div>' +
+-        '<div id="dialer-bar">' +
+-        '  <div id="dialer-container">' +
+-        '    <div id="frequency-indicator"></div>' +
+-        '    <div id="frequency-dialer" class="animation-on"></div>' +
+-        '  </div>' +
+-        '</div>' +
+-        '<div id="antenna-warning" hidden="hidden"></div>';
+-
+-      document.body.appendChild(tempNode);
+-      frequencyDialer.init();
+-    });
+-
+-    suiteTeardown(function() {
+-      tempNode.parentNode.removeChild(tempNode);
+-      tempNode = null;
+-    });
+-
+-    test('resolved frequency within bounds', function()  {
+-      setFrequency(92);
+-    });
+-
+-    test('resolved frequency exceeding upperbound', function() {
+-      setFrequency(mozFMRadio.frequencyUpperBound + 10);
+-    });
+-
+-    test('resolved frequency exceeding lowerbound', function() {
+-      setFrequency(mozFMRadio.frequencyLowerBound - 10);
+-    });
+-
+-    test('retrieved frequency', function() {
+-      assert.equal(frequencyDialer.getFrequency(), 87.5);
+-    });
+-
+-    test('updated #frequency dom display digits', function() {
+-      assert.equal($('frequency').textContent, 87.5);
+-    });
+-
+-    // temporarily removing due to test not passing on TBPL Bug 876265
+-    // test('changed horizontal position of dialer', function() {
+-    //   var prevX = frequencyDialer._translateX;
+-    //   frequencyDialer.setFrequency(100);
+-    //   assert.notEqual(frequencyDialer._translateX, prevX);
+-    // });
+-
+-    test('#frequency display percision to one decimal point', function() {
+-        assert.ok($('frequency').textContent.indexOf('.') > -1);
+-      });
+-
+-  });
+-
+-  suite('history list', function() {
+-    setup(function() {
+-      historyList._save = function() {return true};
+-    });
+-
+-    test('item added to history list', function() {
+-      historyList.add(100);
+-      assert.equal(historyList._historyList.length, 1);
+-    });
+-
+-    test('gets the last frequency tuned', function() {
+-      assert.equal(historyList.last().frequency, 100);
+-    });
+-
+-  });
+-
+-  suite('favorite list', function() {
+-
+-    suiteSetup(function() {
+-      favoritesList._save = function() {return true};
+-      favoritesList._favList = {};
+-      tempNode = document.createElement('div');
+-      tempNode.id = 'test';
+-      tempNode.innerHTML = '<div id="fav-list-container"></div>';
+-
+-      document.body.appendChild(tempNode);
+-    });
+-
+-    suiteTeardown(function() {
+-      tempNode.parentNode.removeChild(tempNode);
+-      tempNode = null;
+-    });
+-
+-    test('item added to favorite list', function() {
+-      favoritesList.add(100);
+-      assert.equal(Object.keys(favoritesList._favList).length, 1);
+-    });
+-
+-    test('added item is updated in DOM #fav-list', function() {
+-      assert.equal($('fav-list-container').childNodes.length, 1);
+-    });
+-
+-    test('contains a frequency', function() {
+-      assert.ok(favoritesList.contains(100));
+-    });
+-
+-    test('selected frequency in DOM #fav-list', function() {
+-      favoritesList.select(100);
+-      assert.ok($$('#fav-list-container div.fav-list-item')[0]
+-        .classList.contains('selected'));
+-    });
+-
+-    test('removed frequency from list', function() {
+-      assert.ok(favoritesList.remove(100));
+-    });
+-
+-    test('removed item is updated in DOM #fav-list', function() {
+-      assert.equal($('fav-list-container').childNodes.length, 0);
+-    });
+-
+-    test('items are in desceding order', function() {
+-      favoritesList.add(100);
+-      favoritesList.add(101);
+-      favoritesList.add(102);
+-      var items = $$('#fav-list-container div.fav-list-item');
+-      var isAscending = true;
+-      for (var i = 0, len = items.length; i < len - 1; i++) {
+-        var itemA = items[i].childNodes[0].textContent;
+-        var itemB = items[i + 1].childNodes[0].textContent;
+-        if (itemA > itemB) {
+-          isAscending = false;
+-          break;
+-        }
+-      }
+-      assert.ok(isAscending);
+-    });
+-
+-  });
+-
+-  suite('update display states', function() {
+-    suiteSetup(function() {
+-      mozFMRadio.enabled = true;
+-      mozFMRadio.antennaAvailable = true;
+-      tempNode = document.createElement('div');
+-      tempNode.id = 'test';
+-      tempNode.innerHTML =
+-        '<div id="antenna-warning" hidden></div>' +
+-        '<div id="frequency-bar"></div>' +
+-        '<a id="power-switch" href="#power-switch" data-enabled="false"' +
+-        '  data-enabling="false"></a></div>';
+-
+-      document.body.appendChild(tempNode);
+-      updateEnablingState(true);
+-    });
+-
+-    suiteTeardown(function() {
+-      tempNode.parentNode.removeChild(tempNode);
+-      tempNode = null;
+-    });
+-
+-    suite('enabling UI', function() {
+-
+-      test('#power-switch enabled attribute is correctly set', function() {
+-        assert.equal(!!$('power-switch').dataset.enabled, mozFMRadio.enabled);
+-      });
+-
+-      test('#power-switchh enabling attribute is correctly set', function() {
+-        assert.equal(!!$('power-switch').dataset.enabling, enabling);
+-      });
+-
+-      test('#frequency-bar display is dimmed', function() {
+-        assert.ok($('frequency-bar').classList.contains('dim'));
+-      });
+-
+-      test('#antenna-warning is hidden', function() {
+-        assert.ok(!!$('antenna-warning').hidden, mozFMRadio.antennaAvailable);
+-      });
+-    });
+-  });
+-
+-  suite('update UI based on the airplane mode status', function() {
+-    suiteSetup(function() {
+-      tempNode = document.createElement('div');
+-      tempNode.id = 'test';
+-      tempNode.innerHTML = '<div id="airplane-mode-warning" hidden></div>';
+-      document.body.appendChild(tempNode);
+-    });
+-
+-    suiteTeardown(function() {
+-      tempNode.parentNode.removeChild(tempNode);
+-      tempNode = null;
+-    });
+-
+-    suite('airplane mode on', function() {
+-      setup(function() {
+-        airplaneModeEnabled = true;
+-        updateAirplaneModeUI();
+-      });
+-
+-      test('#airplane-mode-warning is shown', function() {
+-        assert.equal(!!$('airplane-mode-warning').hidden, false);
+-      });
+-    });
+-
+-    suite('airplane mode off', function() {
+-      setup(function() {
+-        airplaneModeEnabled = false;
+-        updateAirplaneModeUI();
+-      });
+-
+-      test('#airplane-mode-warning is hidden', function() {
+-        assert.equal(!!$('airplane-mode-warning').hidden, true);
+-      });
+-    });
+-  });
+-
+-  suite('update UI based on the antenna status', function() {
+-    suiteSetup(function() {
+-      tempNode = document.createElement('div');
+-      tempNode.id = 'test';
+-      tempNode.innerHTML = '<div id="antenna-warning" hidden></div>';
+-      document.body.appendChild(tempNode);
+-    });
+-
+-    suiteTeardown(function() {
+-      tempNode.parentNode.removeChild(tempNode);
+-      tempNode = null;
+-    });
+-
+-    suite('antenna is plugged in', function() {
+-      setup(function() {
+-        mozFMRadio.antennaAvailable = true;
+-        updateAntennaUI();
+-      });
+-
+-      test('#antenna-warning is hidden', function() {
+-        assert.equal(!!$('antenna-warning').hidden, true);
+-      });
+-    });
+-
+-    suite('antenna is not plugged in', function() {
+-      setup(function() {
+-        mozFMRadio.antennaAvailable = false;
+-        updateAntennaUI();
+-      });
+-
+-      test('#antenna-warning is shown', function() {
+-        assert.equal(!!$('antenna-warning').hidden, false);
+-      });
+-    });
+-  });
+-
+-  suite('update radio status based on incoming attention screen status',
+-    function() {
+-      suiteSetup(function() {
+-
+-        // Stub AirplaneModeHelper
+-        window.AirplaneModeHelper = {
+-          addEventListener: sinon.stub(),
+-          ready: sinon.stub()
+-        };
+-
+-        // Stub asyncStorage
+-        window.asyncStorage = {
+-          getItem: sinon.stub(),
+-          setItem: sinon.stub()
+-        };
+-
+-        // Stub enableFMRadio
+-        window.enableFMRadio = sinon.stub();
+-
+-        // Stub mozSettings
+-        navigator.mozSettings = {
+-          addObserver: function(key, callback) {
+-            this.callback = callback;
+-          }
+-        };
+-
+-        tempNode = document.createElement('div');
+-        tempNode.id = 'test';
+-        tempNode.innerHTML =
+-          '<div id="frequency-bar">' +
+-          '  <div id="frequency-display">' +
+-          '    <a id="speaker-switch" href="#speaker" ' +
+-                'data-speaker-on="false"></a>' +
+-          '    <a id="bookmark-button" href="#bookmark"' +
+-          '      data-bookmarked="false"></a>' +
+-          '    <div id="frequency">0</div>' +
+-          '  </div>' +
+-          '</div>' +
+-          '<div id="dialer-bar">' +
+-          '  <div id="dialer-container">' +
+-          '    <div id="frequency-indicator"></div>' +
+-          '    <div id="frequency-dialer" class="animation-on"></div>' +
+-          '  </div>' +
+-          '</div>' +
+-          '<a id="frequency-op-seekdown" href="#seekdown"></a>' +
+-          '<a id="power-switch" href="#power-switch" data-enabled="false" ' +
+-            'data-enabling="false"></a>' +
+-          '<a id="frequency-op-seekup" href="#seekup"></a>' +
+-          '<div id="antenna-warning" hidden="hidden"></div>' +
+-          '<div id="airplane-mode-warning" class="warning" hidden>';
+-
+-        document.body.appendChild(tempNode);
+-        init();
+-      });
+-
+-      suiteTeardown(function() {
+-        tempNode.parentNode.removeChild(tempNode);
+-        tempNode = null;
+-      });
+-
+-      test('disabled powered-on radio for incoming attention screen',
+-        function() {
+-          mozFMRadio.enabled = true;
+-          mozFMRadio.antennaAvailable = true;
+-          navigator.mozSettings.callback({
+-            settingValue: true
+-          });
+-
+-          assert.equal(mozFMRadio.enabled, false);
+-        }
+-      );
+-
+-      test('enabled previously powered-on radio for outgoing attention screen',
+-        function() {
+-          mozFMRadio.enabled = true;
+-          mozFMRadio.antennaAvailable = true;
+-          navigator.mozSettings.callback({
+-            settingValue: false
+-          });
+-
+-          assert.ok(window.enableFMRadio.called);
+-        }
+-      );
+-
+-      test('did nothing for powered-off radio for incoming attention screen',
+-        function() {
+-          mozFMRadio.enabled = false;
+-          mozFMRadio.antennaAvailable = true;
+-          navigator.mozSettings.callback({
+-            settingValue: true
+-          });
+-
+-          assert.equal(window._previousFMRadioState, false);
+-        }
+-      );
+-
+-      test('did nothing for previously powered-off radio for outgoing ' +
+-        'attention screen',
+-        function() {
+-          mozFMRadio.antennaAvailable = true;
+-          window._previousFMRadioState = false;
+-          window._previousEnablingState = false;
+-          navigator.mozSettings.callback({
+-            settingValue: false
+-          });
+-
+-          assert.equal(mozFMRadio.enabled, false);
+-        }
+-      );
+-    }
+-  );
+-});
+diff --git a/build/config/common-settings.json b/build/config/common-settings.json
+index f8af763..77acb6f 100644
+--- a/build/config/common-settings.json
++++ b/build/config/common-settings.json
+@@ -28,7 +28,7 @@
+    "camera.recording.preferredSizes": [],
+    "clear.remote-windows.data": false,
+    "debug.console.enabled": false,
+-   "developer.menu.enabled": false,
++   "developer.menu.enabled": true,
+    "debug.oop.disabled": false,
+    "debug.fps.enabled": false,
+    "debug.ttl.enabled": false,
+@@ -85,10 +85,10 @@
+    "icc.selectTimeout": 150000,
+    "identity.fxaccounts.reset-password.url": "https://accounts.firefox.com/reset_password",
+    "in-app-sheet.enabled": false,
+-   "keyboard.vibration": true,
+-   "keyboard.clicksound": false,
+-   "keyboard.autocorrect": true,
+-   "keyboard.wordsuggestion": true,
++   "keyboard.vibration": false,
++   "keyboard.clicksound": true,
++   "keyboard.autocorrect": false,
++   "keyboard.wordsuggestion": false,
+    "keyboard.current": null,
+    "keyboard.ftu.enabled": false,
+    "keyboard.3rd-party-app.enabled": true,
+@@ -96,7 +96,7 @@
+    "language.current": "en-US",
+    "layers.draw-borders": false,
+    "layers.dump": false,
+-   "layers.enable-tiles": true,
++   "layers.enable-tiles": false,
+    "layers.simple-tiles": false,
+    "lockscreen.passcode-lock.code": "0000",
+    "lockscreen.passcode-lock.timeout": 0,
+@@ -180,7 +180,7 @@
+    "search.iconUrl": "data:image/x-icon;base64,AAABAAIAEBAAAAAAAAB9AQAAJgAAACAgAAAAAAAA8gIAAKMBAACJUE5HDQoaCgAAAA1JSERSAAAAEAAAABAIBgAAAB/z/2EAAAFESURBVDjLpZNJSwNBEIXnt4lE4kHxovgT9BDwJHqPy0HEEOJBiAuCRg+KUdC4QS4KrpC4gCBGE3NQ48JsnZ6eZ3UOM6gjaePhQU93v6+qq2q0pqgeJj2S8EdJT1hr0OxBtKCD5iEd8QxDYpvhvOBAuMDKURX9C9aPu4GA1GEVkzvMg10UBfYveWAWgYAP00V01fa+R9M2bA51wJvhIn3qR+ybt3D3JNQBE5sMjCIOLFpoHzOwdsLRO22qA6R6kiZiWwxUvy/PUQZIhYZ1vFM9cvcOOsYNdcBgysISdSJBnZjJMlR0Fw8vAp0xoz5gao/h+NZBy4i/10XGwrPA+hmvDyhVRG2Avu/LwcrkFADZa16L1h330w1RNgc3DiJzCpPYRm1bpveXX11clQR28xwblHpk1vq1iP/5mcoS0CoXDZiL0vsJ+dzfl+3T/VYAAAAASUVORK5CYIKJUE5HDQoaCgAAAA1JSERSAAAAIAAAACAIBgAAAHN6evQAAAK5SURBVFjDxVfrSxRRFJ9/Jta/oyWjF5XQm6D6EkHRgygIIgjUTcueVgqVWSRRkppEUQYWWB8ye1iGWilWlo/Ude489s7M6Zw7D9dlt53dmd29cFiWvXvO77x+51xpaaUsoSxBaUWZQ4ECy5xji2xKZDyCMlMEw6lCNiOSgwZKJK1SkcKeSealfP64t0mBjl4Ow39MkDUL0p2RSROOtqhZdeUEYM1pBl39XCg/fEeFtWcY7G9W4csvUxjlBkCsQ4Nt9QyWVfvT6RsAKXw3aoDGATZeYIt+W1kjw7cJG0RctWDTRebbKd8A6h5pwsDb70ba3w/eUr3wt/cmwgfw6Yft4TNMQaY7o1P2ncm4FT4ANQH/jQBJ2xv7kqIXEADDql8eS3+n8bku7oxNm+EDIM/dU92upb3T/NJGeaNbDx/AsbsLRUY5Xn92caWXY5d8RV6gWllxSg4fAEnTC90DQW13BLlgXR2D3dcUeDVkwOthA1bXspxILWcm3HdThcfvufB26LcJpkOEAz9NKI/lzqpSEC7feol5EWnpSeSlIxCALUkApmULdjUqxQVAQnl3D/X/yQda4QBEq2TYc12By091MQ17Bg3R88nHKlQbVmHvj89awNBLYrwT9zXY2aBAxTkGFdiSxP/Jp6FLDw+AS7GfsdJTJ2EqSO5khD43nGfBARy/ZxOQgZHe7GPM1jzUvChUtmnBAXQPcKGMJp3fdFGq6NByEhiAO4b/YptFfQJwNyQ/bZkVQGcf90Ja25ndIyrKBOa/f8wIpwi3X1G8UcxNu7ozUS7tiH0jBswwS3RIaF1w6LYKU/ML2+8sGnjygQswtKrVIy/Qd9qQP6LnO64q4fPAKpxyZIymHo1jWk6p1ag2BsdNwQMHcC+M5kHFJX+YlPxpVlbCx2mZ5DzPI04k4kUwHHdskU3pH76iftG8yWlkAAAAAElFTkSuQmCC",
+    "software-button.enabled": false,
+    "homegesture.enabled": false,
+-   "edgesgesture.enabled": true,
++   "edgesgesture.enabled": false,
+    "continuous-transition.enabled": false,
+    "support.onlinesupport.title": "",
+    "support.onlinesupport.href": "",
+diff --git a/build/contacts-import-services.js b/build/contacts-import-services.js
+index 9c13591..18e0980 100644
+--- a/build/contacts-import-services.js
++++ b/build/contacts-import-services.js
+@@ -24,11 +24,8 @@ function generateServicesConfig(config) {
+ 
+   var importServices = utils.getJSON(importServicesFile);
+ 
+-  // Bug 883344 Only use default facebook app id if is mozilla partner build
+-  if (config.OFFICIAL === '1') {
+-    importServices.facebook.applicationId = '395559767228801';
+-    importServices.live.applicationId = '00000000440F8B08';
+-  }
++  importServices.facebook.applicationId = '395559767228801';
++  importServices.live.applicationId = '00000000440F8B08';
+ 
+   var jsPrefix =  'var oauthflow = this.oauthflow || {}; oauthflow.params = ';
+ 
